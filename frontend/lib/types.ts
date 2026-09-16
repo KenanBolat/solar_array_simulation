@@ -16,6 +16,7 @@ export interface Unit {
   voltageSetpoint: number;
   currentLimit: number;
   featured: boolean;
+  enabled: boolean;
 }
 
 export interface UnitDetail extends Unit {

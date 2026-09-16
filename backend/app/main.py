@@ -1,9 +1,29 @@
+import asyncio
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from . import orm
+from .db import engine, session_scope
+from .poller import telemetry_poller
 from .routers import racks, units, measurements, alarms, history, runs, scenarios, config
+from .seed import seed_if_empty
 
-app = FastAPI(title="Solar Array Simulator Control Platform API", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    orm.Base.metadata.create_all(engine)
+    with session_scope() as db:
+        seed_if_empty(db)
+    task = asyncio.create_task(telemetry_poller())
+    try:
+        yield
+    finally:
+        task.cancel()
+
+
+app = FastAPI(title="Solar Array Simulator Control Platform API", version="0.2.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,

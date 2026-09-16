@@ -58,18 +58,24 @@ function UnitCard({ u }: { u: Unit }) {
 }
 
 export default function OverviewPage() {
-  usePageHeader("Rack Overview", "Physical layout · 3 racks · 20 units");
   const { data: summary } = usePoll(() => api.summary(), 4000);
   const { data: racks } = usePoll(() => api.racks(), 4000);
   const { data: alarmsData } = usePoll(() => api.alarms("Active"), 6000);
   const { data: history } = usePoll(() => api.history("All", 5), 6000);
   const { data: runs } = usePoll(() => api.runs("All"), 6000);
 
+  const rackCount = racks?.length ?? 0;
+  const unitCount = summary?.configuredUnits ?? 0;
+  usePageHeader(
+    "Rack Overview",
+    `Physical layout · ${rackCount} rack${rackCount === 1 ? "" : "s"} · ${unitCount} unit${unitCount === 1 ? "" : "s"}`
+  );
+
   return (
     <div className="flex gap-4.5 p-5">
       <div className="min-w-0 flex-1">
         <div className="mb-4.5 grid grid-cols-5 gap-3">
-          <StatCard label="Online Devices" value={`${summary?.onlineDevices ?? "—"} / 20`} color="#34d399" />
+          <StatCard label="Online Devices" value={`${summary?.onlineDevices ?? "—"} / ${unitCount}`} color="#34d399" />
           <StatCard label="Active Outputs" value={summary?.activeOutputs ?? "—"} color="#2dd4ee" />
           <StatCard label="Total Power" value={summary?.totalPowerW ?? "—"} unit=" W" color="#2dd4ee" />
           <StatCard label="Running Scenarios" value={summary?.runningScenarios ?? "—"} />
@@ -78,7 +84,10 @@ export default function OverviewPage() {
 
         <div className="flex gap-4">
           {(racks ?? []).map((rk) => (
-            <div key={rk.id} className="flex-1 overflow-hidden rounded-[10px] border border-line bg-rack">
+            <div
+              key={rk.id}
+              className={`overflow-hidden rounded-[10px] border border-line bg-rack ${rackCount === 1 ? "w-full max-w-sm" : "flex-1"}`}
+            >
               <div className="flex items-center justify-between border-b border-line bg-panel px-3.5 py-3">
                 <div>
                   <div className="font-mono text-[13px] font-bold">{rk.name}</div>
@@ -92,6 +101,11 @@ export default function OverviewPage() {
                 {rk.units.map((u) => (
                   <UnitCard key={u.name} u={u} />
                 ))}
+                {rk.units.length === 0 && (
+                  <div className="rounded-md border border-dashed border-line2 px-3 py-4 text-center text-[11px] text-faint">
+                    No units in this rack yet — add one in Configuration → Simulator Units.
+                  </div>
+                )}
               </div>
             </div>
           ))}

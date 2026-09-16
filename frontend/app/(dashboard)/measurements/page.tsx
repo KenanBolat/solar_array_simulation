@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
 import { usePoll } from "@/lib/useApi";
 import { usePageHeader } from "@/lib/header-context";
@@ -13,10 +13,19 @@ export default function MeasurementsPage() {
   usePageHeader("Measurements", "Telemetry explorer · multi-unit comparison");
   const { notify } = useUi();
   const [range, setRange] = useState("30 min");
-  const [selected, setSelected] = useState<string[]>(["SAS-07", "SAS-10", "SAS-14"]);
+  const [selected, setSelected] = useState<string[]>([]);
+  const defaultedRef = useRef(false);
 
   const { data: units } = usePoll(() => api.units(), 8000);
   const { data: meas } = usePoll(() => api.measurements(selected, range), 4000, [selected.join(","), range]);
+
+  // Pick a sensible default selection the first time real units arrive.
+  useEffect(() => {
+    if (!defaultedRef.current && units && units.length > 0) {
+      defaultedRef.current = true;
+      setSelected(units.filter((u) => u.online).slice(0, 5).map((u) => u.name));
+    }
+  }, [units]);
 
   const online = (units ?? []).filter((u) => u.online).slice(0, 10);
 

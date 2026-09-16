@@ -1,20 +1,21 @@
-from fastapi import APIRouter, HTTPException
-from .. import data
-from ..state import state
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
+
+from .. import data, state
+from ..db import get_db
 from ..models import AssignRequest
 
 router = APIRouter(prefix="/api/config", tags=["config"])
 
 
 @router.get("/racks")
-def config_racks():
-    return [{"id": rid, **meta, "unitsAssigned": sum(1 for v in state.assign.values() if v)}
-            for rid, meta in data.RACK_META.items()]
+def config_racks(db: Session = Depends(get_db)):
+    return state.config_racks(db)
 
 
 @router.get("/units")
-def config_units():
-    return state.config_units()
+def config_units(db: Session = Depends(get_db)):
+    return state.config_units(db)
 
 
 @router.get("/limits")
@@ -23,12 +24,13 @@ def config_limits():
 
 
 @router.get("/rack-editor")
-def rack_editor(rack: str = "B"):
-    return {"slots": state.rack_slots(rack), "palette": state.palette}
+def rack_editor(rack: str = "A", db: Session = Depends(get_db)):
+    return {"slots": state.rack_slots(db, rack), "palette": state.unassigned_units(db, rack)}
 
 
 @router.post("/rack-editor/assign")
-def assign(body: AssignRequest):
-    if body.slot[0] not in data.RACK_META:
-        raise HTTPException(400, "Unknown rack")
-    return state.assign_unit(body.slot, body.unitName)
+def assign(body: AssignRequest, db: Session = Depends(get_db)):
+    try:
+        return state.assign_unit(db, body.slot, body.unitName)
+    except ValueError as e:
+        raise HTTPException(400, str(e))

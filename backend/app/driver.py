@@ -32,18 +32,3 @@ def compute_live_values(name: str, online: bool, output: bool, voltage_setpoint:
     i = max(0.0, i)
     p = v * i
     return round(v, 3), round(i, 3), round(p, 3)
-
-
-def gen_series(base: float, amp: float, vmin: float, vmax: float, n: int, seed: float):
-    """Deterministic-looking wiggly series, mirrors the wireframe's genSeries()."""
-    out = []
-    for idx in range(n):
-        val = (base + math.sin(idx * 0.55 + seed) * amp * 0.55
-               + math.sin(idx * 1.9 + seed * 1.3) * amp * 0.3
-               + math.sin(idx * 0.21 + 1) * amp * 0.15)
-        out.append(round(max(vmin, min(vmax, val)), 3))
-    return out
-
-
-RANGE_N = {"5 min": 30, "30 min": 48, "1 hour": 60, "24 hours": 84, "Custom": 48}
-RANGE_SEED = {"5 min": 1, "30 min": 2, "1 hour": 3, "24 hours": 4, "Custom": 2}

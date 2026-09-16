@@ -17,6 +17,7 @@ export function TopBar() {
   }, []);
 
   const online = summary?.onlineDevices ?? "—";
+  const total = summary?.configuredUnits ?? "—";
   const alarms = summary?.activeAlarms ?? 0;
 
   return (
@@ -28,7 +29,7 @@ export function TopBar() {
       <div className="flex-1" />
       <div className="flex items-center gap-1.5 rounded-md border border-green/30 bg-green/10 px-2.5 py-1">
         <span className="h-[7px] w-[7px] animate-scpulse rounded-full bg-green" />
-        <span className="font-mono text-[11px] font-semibold text-green">{online}/20 ONLINE</span>
+        <span className="font-mono text-[11px] font-semibold text-green">{online}/{total} ONLINE</span>
       </div>
       {alarms > 0 && (
         <div className="flex items-center gap-1.5 rounded-md border border-amber/30 bg-amber/10 px-2.5 py-1">

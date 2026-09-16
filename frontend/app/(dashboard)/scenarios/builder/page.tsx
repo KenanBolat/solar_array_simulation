@@ -36,6 +36,8 @@ export default function ScenarioBuilderPage() {
   usePageHeader("Scenario Builder", "Eclipse Cycle — Panel A · v1.4");
   const { notify } = useUi();
   const { data: graph } = usePoll(() => api.scenario(SCENARIO_ID), 30000);
+  const { data: units } = usePoll(() => api.units(), 15000);
+  const targetUnit = units?.find((u) => u.featured)?.name ?? units?.[0]?.name ?? "the configured target unit";
   const [selectedNode, setSelectedNode] = useState("thresh");
   const [nodeProps, setNodeProps] = useState<NodeProps | null>(null);
   const [zoom, setZoom] = useState(1);
@@ -191,7 +193,7 @@ export default function ScenarioBuilderPage() {
               This dispatches validated SCPI command sequences to live simulator units. Confirm pre-run checks:
             </div>
             <div className="mb-5 flex flex-col gap-2 text-[12px] text-[#cfd6e2]">
-              <div className="flex items-center gap-2"><span className="text-green">✓</span> Targets: SAS-07 · single unit · simulation mode</div>
+              <div className="flex items-center gap-2"><span className="text-green">✓</span> Targets: {targetUnit} · single unit · simulation mode</div>
               <div className="flex items-center gap-2"><span className="text-green">✓</span> Dry-run validation passed · 0 invalid nodes</div>
               <div className="flex items-center gap-2"><span className="text-amber">⚠</span> Output will be energised to 28.0 V during run</div>
             </div>

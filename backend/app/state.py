@@ -1,318 +1,431 @@
 import asyncio
-import time
-from datetime import datetime, timezone
-from itertools import count
+from datetime import datetime, timedelta, timezone
 
-from . import data
-from .driver import compute_live_values, gen_series, RANGE_N, RANGE_SEED
+from sqlalchemy.orm import Session
 
-_corr_seq = count(0x9F30, 1)
+from . import data, orm
+from .db import session_scope
+from .driver import compute_live_values
+
+RANGE_WINDOW = {
+    "5 min": timedelta(minutes=5),
+    "30 min": timedelta(minutes=30),
+    "1 hour": timedelta(hours=1),
+    "24 hours": timedelta(hours=24),
+    "Custom": timedelta(minutes=30),
+}
+
+_run_tasks: dict[str, asyncio.Task] = {}
 
 
 def now_hhmmss():
     return datetime.now(timezone.utc).strftime("%H:%M:%S")
 
 
-def next_corr_id():
-    return "CMD-" + format(next(_corr_seq), "X")
+# ---------- units ----------
+def unit_live_values(u: orm.Unit):
+    return compute_live_values(
+        u.name, bool(u.enabled and u.online), u.output, u.voltage_setpoint, u.current_limit,
+        featured=u.featured, featured_v=data.FEATURED_VOLTAGE,
+        featured_i=data.FEATURED_CURRENT, featured_p=data.FEATURED_POWER,
+    )
 
 
-class Unit:
-    def __init__(self, name, rack, slot, online, output, alarm):
-        self.name = name
-        self.rack = rack
-        self.slot = slot
-        self.online = online
-        self.output = output
-        self.alarm = alarm  # "normal" | "warning" | "offline"
-        self.voltage_setpoint = data.FEATURED_VOLTAGE if name == data.FEATURED_UNIT else 28.0
-        self.current_limit = 5.0
-        self.featured = name == data.FEATURED_UNIT
+def unit_status(u: orm.Unit):
+    if not u.enabled or not u.online:
+        return "OFFLINE", "faint"
+    if u.alarm == "warning":
+        return "WARNING", "amber"
+    if u.output:
+        return "ACTIVE", "cyan"
+    return "ONLINE", "green"
 
-    @property
-    def status_text(self):
-        if not self.online:
-            return "OFFLINE"
-        if self.alarm == "warning":
-            return "WARNING"
-        if self.output:
-            return "ACTIVE"
-        return "ONLINE"
 
-    @property
-    def status_color(self):
-        return {"OFFLINE": "faint", "WARNING": "amber", "ACTIVE": "cyan", "ONLINE": "green"}[self.status_text]
+def unit_to_dict(u: orm.Unit):
+    v, i, p = unit_live_values(u)
+    status_text, status_color = unit_status(u)
+    return {
+        "name": u.name, "rack": u.rack_id, "slot": u.slot,
+        "pos": f"{u.rack.name} · S{u.slot}",
+        "online": bool(u.enabled and u.online), "output": bool(u.output), "alarm": u.alarm,
+        "statusText": status_text, "statusColor": status_color,
+        "voltage": v, "current": i, "power": p,
+        "voltageSetpoint": u.voltage_setpoint, "currentLimit": u.current_limit,
+        "featured": u.featured, "enabled": u.enabled,
+    }
 
-    def live_values(self):
-        return compute_live_values(
-            self.name, self.online, self.output, self.voltage_setpoint, self.current_limit,
-            featured=self.featured, featured_v=data.FEATURED_VOLTAGE,
-            featured_i=data.FEATURED_CURRENT, featured_p=data.FEATURED_POWER,
-        )
 
-    def visa(self):
-        return f"TCPIP0::192.168.10.{20 + self.slot}::inst0::INSTR"
+def unit_to_detail_dict(u: orm.Unit):
+    base = unit_to_dict(u)
+    base.update({
+        "connection": "CONNECTED" if (u.enabled and u.online) else "OFFLINE",
+        "visa": u.visa,
+        "lastComm": now_hhmmss() if (u.enabled and u.online) else "—",
+        "firmware": u.firmware,
+        "mode": "SIMULATION",
+        "deviceState": "Stable" if u.output else "Output Disabled",
+    })
+    return base
 
-    def to_dict(self):
-        v, i, p = self.live_values()
-        rack_meta = data.RACK_META[self.rack]
-        return {
-            "name": self.name, "rack": self.rack, "slot": self.slot,
-            "pos": f"{rack_meta['name']} · S{self.slot}",
-            "online": self.online, "output": self.output, "alarm": self.alarm,
-            "statusText": self.status_text, "statusColor": self.status_color,
-            "voltage": v, "current": i, "power": p,
-            "voltageSetpoint": self.voltage_setpoint, "currentLimit": self.current_limit,
-            "featured": self.featured,
-        }
 
-    def to_detail_dict(self):
-        base = self.to_dict()
-        base.update({
-            "connection": "CONNECTED" if self.online else "OFFLINE",
-            "visa": self.visa(),
-            "lastComm": now_hhmmss() if self.online else "—",
-            "firmware": "E4360A · v3.1.2",
-            "mode": "SIMULATION",
-            "deviceState": "Stable" if self.output else "Output Disabled",
+def get_unit(db: Session, name: str):
+    return db.get(orm.Unit, name)
+
+
+def list_units(db: Session):
+    return db.query(orm.Unit).order_by(orm.Unit.rack_id, orm.Unit.slot).all()
+
+
+def racks(db: Session):
+    out = []
+    for rack in db.query(orm.Rack).order_by(orm.Rack.id).all():
+        us = sorted(rack.units, key=lambda u: u.slot)
+        out.append({
+            "id": rack.id, "name": rack.name, "loc": rack.loc, "cap": rack.cap,
+            "count": len(us), "onCount": sum(1 for u in us if u.enabled and u.online),
+            "units": [unit_to_dict(u) for u in us],
         })
-        return base
+    return out
 
 
-class Run:
-    def __init__(self, seed):
-        self.__dict__.update(seed)
-        self.events = list(data.RUN_EVENTS_SEED.get(self.id, []))
-        self._task = None
-
-    def to_dict(self):
-        return {
-            "id": self.id, "scenario": self.scenario, "version": self.version,
-            "status": self.status, "dry": self.dry, "prog": self.prog,
-            "targets": self.targets, "by": self.by, "started": self.started,
-            "finished": self.finished, "dur": self.dur,
-        }
-
-    def to_detail_dict(self):
-        d = self.to_dict()
-        d["events"] = self.events
-        return d
+def summary(db: Session):
+    units = list_units(db)
+    online = sum(1 for u in units if u.enabled and u.online)
+    active_out = sum(1 for u in units if u.enabled and u.online and u.output)
+    total_p = sum(unit_live_values(u)[2] for u in units if u.enabled and u.online and u.output)
+    running = db.query(orm.ScenarioRun).filter(orm.ScenarioRun.status == "Running").count()
+    active_alarms = db.query(orm.AlarmRow).filter(orm.AlarmRow.active.is_(True), orm.AlarmRow.ackd.is_(False)).count()
+    crit_alarms = db.query(orm.AlarmRow).filter(orm.AlarmRow.active.is_(True), orm.AlarmRow.ackd.is_(False), orm.AlarmRow.sev == "critical").count()
+    return {
+        "configuredUnits": len(units), "onlineDevices": online, "activeOutputs": active_out,
+        "totalPowerW": round(total_p, 1), "runningScenarios": running,
+        "activeAlarms": active_alarms, "criticalAlarms": crit_alarms,
+    }
 
 
-class AppState:
-    def __init__(self):
-        self.units = {name: Unit(name, rack, slot, online, output, alarm)
-                      for name, rack, slot, online, output, alarm in data.RAW_UNITS}
-        self.alarms = [dict(a, ackd=False) for a in data.ALARMS_SEED]
-        self.history = [dict(h) for h in data.HISTORY_SEED]
-        self.runs = {r["id"]: Run(r) for r in data.RUNS_SEED}
-        self.assign = dict(data.RACK_B_ASSIGN_SEED)
-        self.palette = list(data.RACK_B_PALETTE_SEED)
-        self.node_props_extra = {}
+def create_unit(db: Session, name: str, rack_id: str, visa: str = "", poll_ms: int = 500, slot: int | None = None):
+    rack = db.get(orm.Rack, rack_id)
+    if not rack:
+        raise ValueError(f"Unknown rack {rack_id}")
+    taken = {u.slot for u in rack.units}
+    if slot is None:
+        slot = next((s for s in range(1, rack.cap + 1) if s not in taken), None)
+        if slot is None:
+            raise ValueError(f"Rack {rack_id} is at capacity ({rack.cap} slots)")
+    elif slot in taken:
+        raise ValueError(f"Slot {slot} in rack {rack_id} is already occupied")
+    unit = orm.Unit(
+        name=name, rack_id=rack_id, slot=slot, enabled=True, online=True, output=False,
+        alarm="normal", voltage_setpoint=28.0, current_limit=5.0,
+        visa=visa or f"TCPIP0::192.168.10.{20 + slot}::inst0::INSTR", poll_ms=poll_ms,
+        firmware="E4360A · v3.1.2", featured=False,
+    )
+    db.add(unit)
+    db.commit()
+    return unit
 
-    # ---------- racks / units ----------
-    def racks(self):
-        out = []
-        for rid, meta in data.RACK_META.items():
-            us = sorted([u for u in self.units.values() if u.rack == rid], key=lambda u: u.slot)
-            out.append({
-                "id": rid, "name": meta["name"], "loc": meta["loc"], "cap": meta["cap"],
-                "count": len(us), "onCount": sum(1 for u in us if u.online),
-                "units": [u.to_dict() for u in us],
-            })
-        return out
 
-    def summary(self):
-        units = list(self.units.values())
-        online = sum(1 for u in units if u.online)
-        active_out = sum(1 for u in units if u.online and u.output)
-        total_p = sum(u.live_values()[2] for u in units if u.online and u.output)
-        running = sum(1 for r in self.runs.values() if r.status == "Running")
-        active_alarms = sum(1 for a in self.alarms if a["active"] and not a["ackd"])
-        crit_alarms = sum(1 for a in self.alarms if a["active"] and a["sev"] == "critical" and not a["ackd"])
-        return {
-            "configuredUnits": len(units), "onlineDevices": online, "activeOutputs": active_out,
-            "totalPowerW": round(total_p, 1), "runningScenarios": running,
-            "activeAlarms": active_alarms, "criticalAlarms": crit_alarms,
-        }
+def delete_unit(db: Session, name: str):
+    unit = db.get(orm.Unit, name)
+    if not unit:
+        return False
+    db.query(orm.Measurement).filter(orm.Measurement.unit_name == name).delete()
+    db.delete(unit)
+    db.commit()
+    return True
 
-    def get_unit(self, name):
-        return self.units.get(name)
 
-    def log(self, user, dev, tpl, st="OK", lat="—", rb=True):
-        entry = {"t": now_hhmmss(), "user": user, "dev": dev, "tpl": tpl, "st": st, "lat": lat,
-                 "rb": rb, "cid": next_corr_id()}
-        self.history.insert(0, entry)
-        return entry
-
-    # ---------- measurements ----------
-    def telemetry(self, unit_name, rng):
-        n = RANGE_N.get(rng, 48)
-        seed = RANGE_SEED.get(rng, 2)
-        return {
-            "t": rng, "n": n,
-            "v": gen_series(28, 1.4, 24, 32, n, seed),
-            "i": gen_series(4.2, 0.9, 0, 6, n, seed * 1.4),
-            "p": gen_series(117, 16, 0, 150, n, seed * 0.7),
-        }
-
-    def measurements(self, unit_names, rng):
-        series = []
-        for idx, name in enumerate(unit_names):
-            u = self.units.get(name)
-            seed = RANGE_SEED.get(rng, 2) + idx * 1.7
-            n = RANGE_N.get(rng, 48)
-            series.append({
-                "name": name, "statusColor": u.status_color if u else "cyan",
-                "v": gen_series(28, 1.5, 24, 32, n, seed),
-                "i": gen_series(4.2, 0.9, 0, 6, n, seed * 1.4),
-                "p": gen_series(117, 18, 0, 150, n, seed * 0.7),
-            })
-        rows = []
-        for ui, name in enumerate(unit_names):
-            u = self.units.get(name)
-            if not u:
-                continue
-            h = 0
-            for ch in name:
-                h = (h * 31 + ord(ch)) % 997
-            for k, ts in enumerate(["14:33:00", "14:32:30", "14:32:00"]):
-                hh = h + k * 17
-                v = 27.6 + (hh % 9) * 0.14
-                cur = 3.9 + (hh % 6) * 0.12
-                q = "interp" if (k == 2 and ui == 1) else "ok"
-                rows.append({
-                    "unit": name, "time": ts, "v": round(v, 3), "i": round(cur, 3), "p": round(v * cur, 2),
-                    "out": "ON" if u.output else "OFF", "q": q,
-                })
-        return {"series": series, "rows": rows, "count": len(unit_names),
-                "sampleText": f"{RANGE_N.get(rng, 48)} samples · {rng}"}
-
-    # ---------- alarms ----------
-    def alarms_view(self, flt):
-        rows = [a for a in self.alarms if flt == "All" or (a["active"] if flt == "Active" else not a["active"])]
-        return {
-            "rows": rows,
-            "activeCount": sum(1 for a in self.alarms if a["active"]),
-            "critCount": sum(1 for a in self.alarms if a["sev"] == "critical" and a["active"]),
-        }
-
-    def ack_alarm(self, alarm_id):
-        for a in self.alarms:
-            if a["id"] == alarm_id:
-                a["ackd"] = True
-                return a
+def set_unit_enabled(db: Session, name: str, enabled: bool):
+    unit = db.get(orm.Unit, name)
+    if not unit:
         return None
+    unit.enabled = enabled
+    unit.online = enabled
+    if not enabled:
+        unit.output = False
+    db.commit()
+    return unit
 
-    # ---------- history ----------
-    def history_view(self, flt, limit=200):
-        rows = [h for h in self.history if flt == "All" or h["st"] == flt]
-        return {"rows": rows[:limit], "total": len(self.history), "shown": min(limit, len(rows))}
 
-    # ---------- runs ----------
-    def create_run(self, scenario, version, targets, by="a.ng", dry=False):
-        seq = len(self.runs) + 8843
-        run_id = f"RUN-{seq}"
-        seed = {"id": run_id, "scenario": scenario, "version": version, "status": "Queued",
-                "dry": dry, "prog": 0, "targets": targets, "by": by,
-                "started": now_hhmmss(), "finished": "—", "dur": "0s"}
-        r = Run(seed)
-        self.runs[run_id] = r
-        return run_id
+def set_output(db: Session, name: str, on: bool):
+    unit = db.get(orm.Unit, name)
+    unit.output = on
+    db.commit()
+    return unit
 
-    def runs_view(self, flt):
-        rows = [r.to_dict() for r in self.runs.values() if flt == "All" or r.status == flt]
-        return rows
 
-    def run_detail(self, run_id):
-        r = self.runs.get(run_id)
-        return r.to_detail_dict() if r else None
+def set_setpoint(db: Session, name: str, voltage: float | None, current_limit: float | None):
+    unit = db.get(orm.Unit, name)
+    if voltage is not None:
+        unit.voltage_setpoint = max(0.0, min(32.0, voltage))
+    if current_limit is not None:
+        unit.current_limit = max(0.0, min(6.0, current_limit))
+    db.commit()
+    return unit
 
-    async def start_run(self, run_id, on_tick=None):
-        r = self.runs.get(run_id)
+
+def shutdown_unit(db: Session, name: str):
+    unit = db.get(orm.Unit, name)
+    unit.output = False
+    unit.current_limit = 0.0
+    db.commit()
+    return unit
+
+
+# ---------- command / audit log ----------
+def log_command(db: Session, user: str, dev: str, tpl: str, st: str = "OK", lat: str = "—", rb: bool = True):
+    row = orm.CommandHistoryRow(ts=datetime.now(timezone.utc), user=user, device=dev, template=tpl,
+                                 status=st, latency_ms=_parse_ms(lat), readback=rb, correlation_id="")
+    db.add(row)
+    db.flush()
+    row.correlation_id = "CMD-" + format(0x9F00 + row.id, "X")
+    db.commit()
+    return _history_row_dict(row)
+
+
+def _parse_ms(lat: str) -> int:
+    try:
+        return int(float(str(lat).replace("ms", "").strip()))
+    except ValueError:
+        return 0
+
+
+def _history_row_dict(row: orm.CommandHistoryRow):
+    return {
+        "t": row.ts.strftime("%H:%M:%S"), "user": row.user, "dev": row.device, "tpl": row.template,
+        "st": row.status, "lat": f"{row.latency_ms} ms", "rb": row.readback, "cid": row.correlation_id,
+    }
+
+
+def history_view(db: Session, flt: str, limit: int = 200):
+    q = db.query(orm.CommandHistoryRow)
+    if flt != "All":
+        q = q.filter(orm.CommandHistoryRow.status == flt)
+    total = q.count()
+    rows = q.order_by(orm.CommandHistoryRow.ts.desc()).limit(limit).all()
+    return {"rows": [_history_row_dict(r) for r in rows], "total": total, "shown": len(rows)}
+
+
+# ---------- measurements ----------
+def record_measurement(db: Session, unit_name: str, v: float, i: float, p: float, quality: str = "ok"):
+    db.add(orm.Measurement(unit_name=unit_name, ts=datetime.now(timezone.utc), voltage=v, current=i, power=p, quality=quality))
+    db.commit()
+
+
+def telemetry(db: Session, unit_name: str, rng: str):
+    window = RANGE_WINDOW.get(rng, RANGE_WINDOW["30 min"])
+    since = datetime.now(timezone.utc) - window
+    rows = (db.query(orm.Measurement)
+            .filter(orm.Measurement.unit_name == unit_name, orm.Measurement.ts >= since)
+            .order_by(orm.Measurement.ts.asc()).all())
+    return {
+        "t": rng, "n": len(rows),
+        "v": [r.voltage for r in rows], "i": [r.current for r in rows], "p": [r.power for r in rows],
+    }
+
+
+def measurements(db: Session, unit_names: list[str], rng: str):
+    window = RANGE_WINDOW.get(rng, RANGE_WINDOW["30 min"])
+    since = datetime.now(timezone.utc) - window
+    series = []
+    rows_out = []
+    for name in unit_names:
+        u = get_unit(db, name)
+        rows = (db.query(orm.Measurement)
+                .filter(orm.Measurement.unit_name == name, orm.Measurement.ts >= since)
+                .order_by(orm.Measurement.ts.asc()).all())
+        _, color = unit_status(u) if u else (None, "cyan")
+        series.append({
+            "name": name, "statusColor": color,
+            "v": [r.voltage for r in rows], "i": [r.current for r in rows], "p": [r.power for r in rows],
+        })
+        for r in reversed(rows[-3:]):
+            rows_out.append({
+                "unit": name, "time": r.ts.strftime("%H:%M:%S"), "v": round(r.voltage, 3),
+                "i": round(r.current, 3), "p": round(r.power, 2),
+                "out": "ON" if (u and u.output) else "OFF", "q": r.quality,
+            })
+    n = max((len(s["v"]) for s in series), default=0)
+    return {"series": series, "rows": rows_out, "count": len(unit_names), "sampleText": f"{n} samples · {rng}"}
+
+
+# ---------- alarms ----------
+def _alarm_dict(a: orm.AlarmRow):
+    return {"id": a.id, "time": a.ts.strftime("%H:%M:%S"), "unit": a.unit_name, "code": a.code,
+            "sev": a.sev, "msg": a.msg, "active": a.active, "ackd": a.ackd}
+
+
+def alarms_view(db: Session, flt: str):
+    q = db.query(orm.AlarmRow)
+    if flt == "Active":
+        q = q.filter(orm.AlarmRow.active.is_(True))
+    elif flt == "History":
+        q = q.filter(orm.AlarmRow.active.is_(False))
+    rows = q.order_by(orm.AlarmRow.ts.desc()).all()
+    active_count = db.query(orm.AlarmRow).filter(orm.AlarmRow.active.is_(True)).count()
+    crit_count = db.query(orm.AlarmRow).filter(orm.AlarmRow.active.is_(True), orm.AlarmRow.sev == "critical").count()
+    return {"rows": [_alarm_dict(a) for a in rows], "activeCount": active_count, "critCount": crit_count}
+
+
+def ack_alarm(db: Session, alarm_id: int):
+    a = db.get(orm.AlarmRow, alarm_id)
+    if not a:
+        return None
+    a.ackd = True
+    db.commit()
+    return _alarm_dict(a)
+
+
+# ---------- scenario runs ----------
+def _run_dict(r: orm.ScenarioRun):
+    return {"id": r.id, "scenario": r.scenario, "version": r.version, "status": r.status,
+            "dry": r.dry, "prog": r.progress, "targets": r.targets.split(",") if r.targets else [],
+            "by": r.by, "started": r.started, "finished": r.finished, "dur": r.dur}
+
+
+def runs_view(db: Session, flt: str):
+    q = db.query(orm.ScenarioRun)
+    if flt != "All":
+        q = q.filter(orm.ScenarioRun.status == flt)
+    return [_run_dict(r) for r in q.order_by(orm.ScenarioRun.started.desc()).all()]
+
+
+def run_detail(db: Session, run_id: str):
+    r = db.get(orm.ScenarioRun, run_id)
+    if not r:
+        return None
+    d = _run_dict(r)
+    events = (db.query(orm.ScenarioRunEvent).filter(orm.ScenarioRunEvent.run_id == run_id)
+              .order_by(orm.ScenarioRunEvent.id.asc()).all())
+    d["events"] = [{"t": e.t, "node": e.node, "lvl": e.lvl, "m": e.m} for e in events]
+    return d
+
+
+def create_run(db: Session, scenario: str, version: str, targets: list[str], by: str = "a.ng", dry: bool = False):
+    count = db.query(orm.ScenarioRun).count()
+    run_id = f"RUN-{8843 + count}"
+    db.add(orm.ScenarioRun(id=run_id, scenario=scenario, version=version, status="Queued",
+                            dry=dry, progress=0, targets=",".join(targets), by=by,
+                            started=now_hhmmss(), finished="—", dur="0s"))
+    db.commit()
+    return run_id
+
+
+async def start_run(run_id: str):
+    with session_scope() as db:
+        r = db.get(orm.ScenarioRun, run_id)
         if not r or r.status == "Running":
             return
-        r.status, r.prog = "Running", 0
-        r.started, r.finished = now_hhmmss(), "—"
-        r.events = [{"t": now_hhmmss(), "node": "start", "lvl": "info",
-                     "m": f"Run accepted — scenario {r.version} approved · {len(r.targets)} target(s)"}]
-        steps = ["profile", "setv", "enable", "wait", "read", "thresh", "record", "disable", "end"]
+        r.status, r.progress, r.finished = "Running", 0, "—"
+        r.started = now_hhmmss()
+        db.add(orm.ScenarioRunEvent(run_id=run_id, t=now_hhmmss(), node="start", lvl="info",
+                                     m=f"Run accepted — scenario {r.version} approved · {len(r.targets.split(','))} target(s)"))
 
-        async def _drive():
-            for idx, step in enumerate(steps):
-                await asyncio.sleep(1.2)
-                if r.status != "Running":
+    steps = ["profile", "setv", "enable", "wait", "read", "thresh", "record", "disable", "end"]
+
+    async def _drive():
+        for idx, step in enumerate(steps):
+            await asyncio.sleep(1.2)
+            with session_scope() as db:
+                r = db.get(orm.ScenarioRun, run_id)
+                if not r or r.status != "Running":
                     return
-                r.prog = round((idx + 1) / len(steps) * 100)
-                r.events.append({"t": now_hhmmss(), "node": step, "lvl": "ok", "m": f"{step} → completed"})
-            r.status, r.prog, r.finished = "Completed", 100, now_hhmmss()
-            r.events.append({"t": now_hhmmss(), "node": "end", "lvl": "ok", "m": "Run completed"})
+                r.progress = round((idx + 1) / len(steps) * 100)
+                db.add(orm.ScenarioRunEvent(run_id=run_id, t=now_hhmmss(), node=step, lvl="ok", m=f"{step} → completed"))
+        with session_scope() as db:
+            r = db.get(orm.ScenarioRun, run_id)
+            if r and r.status == "Running":
+                r.status, r.progress, r.finished = "Completed", 100, now_hhmmss()
+                db.add(orm.ScenarioRunEvent(run_id=run_id, t=now_hhmmss(), node="end", lvl="ok", m="Run completed"))
 
-        r._task = asyncio.create_task(_drive())
+    _run_tasks[run_id] = asyncio.create_task(_drive())
 
-    def pause_run(self, run_id):
-        r = self.runs.get(run_id)
-        if r and r.status == "Running":
-            return {"ok": True, "message": f"Pause requested · {run_id}"}
+
+def pause_run(db: Session, run_id: str):
+    r = db.get(orm.ScenarioRun, run_id)
+    if r and r.status == "Running":
+        return {"ok": True, "message": f"Pause requested · {run_id}"}
+    return {"ok": False, "message": "Run is not active"}
+
+
+def abort_run(db: Session, run_id: str):
+    r = db.get(orm.ScenarioRun, run_id)
+    if not r or r.status != "Running":
         return {"ok": False, "message": "Run is not active"}
-
-    def abort_run(self, run_id):
-        r = self.runs.get(run_id)
-        if not r or r.status != "Running":
-            return {"ok": False, "message": "Run is not active"}
-        if r._task:
-            r._task.cancel()
-        r.status, r.finished = "Aborted", now_hhmmss()
-        r.events.append({"t": now_hhmmss(), "node": "shutdown", "lvl": "err",
-                          "m": "Abort dispatched · safe_shutdown on all targets"})
-        return {"ok": True, "message": f"Abort dispatched · {run_id}"}
-
-    # ---------- scenario builder ----------
-    def scenario_graph(self):
-        nodes = [dict(n) for n in data.NODE_DEFS]
-        edges = [{"from": a, "to": b, "kind": k, "fail": f} for a, b, k, f in data.EDGE_DEFS]
-        return {"scenario": data.SCENARIO, "nodes": nodes, "edges": edges, "palette": data.NODE_PALETTE}
-
-    def node_props(self, node_id):
-        if node_id in data.NODE_PROPS_OVERRIDE:
-            return data.NODE_PROPS_OVERRIDE[node_id]
-        n = next((n for n in data.NODE_DEFS if n["id"] == node_id), None)
-        if not n:
-            return None
-        return {
-            "name": n["label"], "target": "Scenario default group",
-            "params": [["Type", n["type"]], ["Value", n.get("sub", "—")]],
-            "delay": "0 ms", "timeout": "5 000 ms", "retry": "0 retries",
-            "fail": "Abort scenario", "comments": "—",
-        }
-
-    # ---------- configuration ----------
-    def config_units(self):
-        out = []
-        for u in list(self.units.values())[:8]:
-            out.append({
-                "name": u.name, "rack": data.RACK_META[u.rack]["name"], "slot": f"S{u.slot}",
-                "visa": u.visa(), "poll": "500 ms", "enabled": u.online,
-            })
-        return out
-
-    def rack_slots(self, rack_id="B"):
-        slots = []
-        for i in range(1, 8):
-            key = f"{rack_id}{i}"
-            occ = self.assign.get(key, "")
-            slots.append({"key": key, "label": f"Slot {i}", "occ": occ, "empty": not occ})
-        return slots
-
-    def assign_unit(self, slot, unit_name):
-        if self.assign.get(slot):
-            freed = self.assign[slot]
-            if freed not in self.palette:
-                self.palette.append(freed)
-        self.assign[slot] = unit_name
-        if unit_name in self.palette:
-            self.palette.remove(unit_name)
-        return {"assign": self.assign, "palette": self.palette}
+    task = _run_tasks.pop(run_id, None)
+    if task:
+        task.cancel()
+    r.status, r.finished = "Aborted", now_hhmmss()
+    db.add(orm.ScenarioRunEvent(run_id=run_id, t=now_hhmmss(), node="shutdown", lvl="err",
+                                 m="Abort dispatched · safe_shutdown on all targets"))
+    db.commit()
+    return {"ok": True, "message": f"Abort dispatched · {run_id}"}
 
 
-state = AppState()
+# ---------- scenario builder (static demo graph, not persisted) ----------
+def scenario_graph():
+    nodes = [dict(n) for n in data.NODE_DEFS]
+    edges = [{"from": a, "to": b, "kind": k, "fail": f} for a, b, k, f in data.EDGE_DEFS]
+    return {"scenario": data.SCENARIO, "nodes": nodes, "edges": edges, "palette": data.NODE_PALETTE}
+
+
+def node_props(node_id: str):
+    if node_id in data.NODE_PROPS_OVERRIDE:
+        return data.NODE_PROPS_OVERRIDE[node_id]
+    n = next((n for n in data.NODE_DEFS if n["id"] == node_id), None)
+    if not n:
+        return None
+    return {
+        "name": n["label"], "target": "Scenario default group",
+        "params": [["Type", n["type"]], ["Value", n.get("sub", "—")]],
+        "delay": "0 ms", "timeout": "5 000 ms", "retry": "0 retries",
+        "fail": "Abort scenario", "comments": "—",
+    }
+
+
+# ---------- configuration ----------
+def config_units(db: Session):
+    out = []
+    for u in list_units(db):
+        out.append({
+            "name": u.name, "rack": u.rack.name, "slot": f"S{u.slot}",
+            "visa": u.visa, "poll": f"{u.poll_ms} ms", "enabled": u.enabled,
+        })
+    return out
+
+
+def config_racks(db: Session):
+    return [{"id": r.id, "name": r.name, "loc": r.loc, "cap": r.cap, "unitsAssigned": len(r.units)}
+            for r in db.query(orm.Rack).all()]
+
+
+def rack_slots(db: Session, rack_id: str):
+    rack = db.get(orm.Rack, rack_id)
+    if not rack:
+        return []
+    occ = {u.slot: u.name for u in rack.units}
+    return [{"key": f"{rack_id}{i}", "label": f"Slot {i}", "occ": occ.get(i, ""), "empty": i not in occ}
+            for i in range(1, rack.cap + 1)]
+
+
+def unassigned_units(db: Session, rack_id: str):
+    # In this build every unit belongs to a rack slot the moment it's created,
+    # so "unassigned" is units from OTHER racks that could be dragged in.
+    return [u.name for u in db.query(orm.Unit).filter(orm.Unit.rack_id != rack_id).all()]
+
+
+def assign_unit(db: Session, slot_key: str, unit_name: str):
+    rack_id, slot_num = slot_key[0], int(slot_key[1:])
+    unit = db.get(orm.Unit, unit_name)
+    if not unit:
+        raise ValueError(f"Unknown unit {unit_name}")
+    target_rack = db.get(orm.Rack, rack_id)
+    if not target_rack:
+        raise ValueError(f"Unknown rack {rack_id}")
+    occupant = next((u for u in target_rack.units if u.slot == slot_num and u.name != unit_name), None)
+    if occupant:
+        occupant.slot = unit.slot if unit.rack_id == rack_id else occupant.slot
+        occupant.rack_id = unit.rack_id
+    unit.rack_id, unit.slot = rack_id, slot_num
+    db.commit()
+    return {"slots": rack_slots(db, rack_id), "palette": unassigned_units(db, rack_id)}

@@ -30,9 +30,16 @@ The design medium is **HTML/CSS/JS** — these are prototypes, not production co
 
 The design above has been implemented as a real full-stack application:
 
-- `backend/` — FastAPI service. In-memory mock state (20 units / 3 racks, alarms,
-  command-audit log, scenario runs, scenario graph). No real hardware/SCPI driver —
-  this is a simulation only, by design (see the handoff conversation in `chats/`).
+- `backend/` — FastAPI service backed by **SQLite** (`backend/data.db`, created and
+  seeded automatically on first run — see `backend/app/orm.py`/`seed.py`). Units,
+  racks, measurements, command-audit log, alarms, and scenario runs are all real
+  persisted rows; nothing resets on restart. A background poller (`app/poller.py`)
+  samples every enabled/online unit every few seconds and writes a real measurement
+  row, the way a real telemetry worker would. Default seed topology is a single
+  RACK-A with two units: SAS-01 (active, output on) and SAS-02 (standby, output
+  off). Units can be added, deleted, enabled and disabled from Configuration →
+  Simulator Units. No real hardware/SCPI driver — this is a simulation only, by
+  design (see the handoff conversation in `chats/`).
 - `frontend/` — Next.js (App Router) + TypeScript + Tailwind app implementing all
   nine screens from the wireframe: Intro, Rack Overview, Simulator Control (with
   Virtual Front Panel and guided Command Terminal modals), Measurements, Scenario

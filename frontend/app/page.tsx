@@ -42,7 +42,10 @@ export default function IntroPage() {
         <div className="grid grid-cols-[1fr_360px] items-start gap-6">
           <div className="flex gap-4">
             {(racks ?? []).map((rk) => (
-              <div key={rk.id} className="flex-1 rounded-[10px] border border-line bg-panel p-3.5">
+              <div
+                key={rk.id}
+                className={`rounded-[10px] border border-line bg-panel p-3.5 ${(racks ?? []).length === 1 ? "w-full max-w-[260px]" : "flex-1"}`}
+              >
                 <div className="mb-2.5 flex items-center justify-between">
                   <div className="font-mono text-[12px] font-bold tracking-wide">{rk.name}</div>
                   <div className="text-[10px] text-faint">

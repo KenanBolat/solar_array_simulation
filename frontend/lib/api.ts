@@ -35,6 +35,11 @@ export const api = {
     j<{ line: string; unit: Unit }>(`/api/units/${name}/terminal/execute`, {
       method: "POST", body: JSON.stringify({ act, value, label }),
     }),
+  createUnit: (body: { name: string; rack: string; slot?: number; visa?: string; pollMs?: number }) =>
+    j<UnitDetail>("/api/units", { method: "POST", body: JSON.stringify(body) }),
+  deleteUnit: (name: string) => j<{ ok: boolean }>(`/api/units/${name}`, { method: "DELETE" }),
+  enableUnit: (name: string) => j<UnitDetail>(`/api/units/${name}/enable`, { method: "POST" }),
+  disableUnit: (name: string) => j<UnitDetail>(`/api/units/${name}/disable`, { method: "POST" }),
 
   measurements: (units: string[], range: string) =>
     j<Measurements>(`/api/measurements?units=${encodeURIComponent(units.join(","))}&range=${encodeURIComponent(range)}`),
@@ -57,7 +62,7 @@ export const api = {
   configRacks: () => j<any[]>("/api/config/racks"),
   configUnits: () => j<any[]>("/api/config/units"),
   configLimits: () => j<any>("/api/config/limits"),
-  rackEditor: (rack = "B") => j<{ slots: any[]; palette: string[] }>(`/api/config/rack-editor?rack=${rack}`),
+  rackEditor: (rack = "A") => j<{ slots: any[]; palette: string[] }>(`/api/config/rack-editor?rack=${rack}`),
   assignUnit: (slot: string, unitName: string) =>
     j<{ assign: Record<string, string>; palette: string[] }>("/api/config/rack-editor/assign", {
       method: "POST", body: JSON.stringify({ slot, unitName }),

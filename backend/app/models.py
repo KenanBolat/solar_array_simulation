@@ -28,3 +28,11 @@ class TerminalExecuteRequest(BaseModel):
     act: str
     value: Optional[float] = None
     label: str
+
+
+class CreateUnitRequest(BaseModel):
+    name: str
+    rack: str = "A"
+    slot: Optional[int] = None
+    visa: Optional[str] = None
+    pollMs: int = 500

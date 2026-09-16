@@ -3,6 +3,7 @@ import { useState } from "react";
 import { api } from "@/lib/api";
 import { usePoll } from "@/lib/useApi";
 import { usePageHeader } from "@/lib/header-context";
+import { useUi } from "@/lib/ui-context";
 import { Btn, Panel } from "@/components/ui";
 
 const TABS = [
@@ -45,8 +46,9 @@ export default function ConfigPage() {
 
 function RackConfigTab() {
   const { data: racks } = usePoll(() => api.configRacks(), 8000);
-  const { data: editor, reload } = usePoll(() => api.rackEditor("B"), 4000);
-  const rackB = (racks ?? []).find((r) => r.id === "B");
+  const rack = (racks ?? [])[0];
+  const rackId = rack?.id ?? "A";
+  const { data: editor, reload } = usePoll(() => api.rackEditor(rackId), 4000, [rackId]);
   const [dragging, setDragging] = useState<string | null>(null);
 
   const onDrop = async (slot: string) => {
@@ -64,16 +66,16 @@ function RackConfigTab() {
           <Btn variant="primary">+ Add Rack</Btn>
         </div>
         <div className="grid grid-cols-2 gap-3">
-          <Field label="Rack Name" value={rackB?.name ?? "RACK-B"} />
-          <Field label="Location" value={rackB?.loc ?? ""} />
-          <Field label="Capacity (slots)" value={String(rackB?.cap ?? 8)} mono />
-          <Field label="Units Assigned" value={String(rackB?.unitsAssigned ?? 0)} mono />
+          <Field label="Rack Name" value={rack?.name ?? "—"} />
+          <Field label="Location" value={rack?.loc ?? ""} />
+          <Field label="Capacity (slots)" value={String(rack?.cap ?? "—")} mono />
+          <Field label="Units Assigned" value={String(rack?.unitsAssigned ?? 0)} mono />
         </div>
         <div className="mt-3.5 text-[11px] text-muted">Drag unassigned units from the palette into rack slots →</div>
       </Panel>
 
       <Panel className="p-3.5">
-        <div className="mb-2.5 text-[12px] font-semibold">Rack Position Editor · RACK-B</div>
+        <div className="mb-2.5 text-[12px] font-semibold">Rack Position Editor · {rack?.name ?? "—"}</div>
         <div className="mb-3.5 flex flex-col gap-1.5">
           {(editor?.slots ?? []).map((s) => (
             <div key={s.key}
@@ -92,6 +94,7 @@ function RackConfigTab() {
               )}
             </div>
           ))}
+          {(editor?.slots ?? []).length === 0 && <div className="text-[11px] text-faint">No rack found.</div>}
         </div>
         <div className="mb-2 text-[10px] uppercase tracking-wider text-faint">Unassigned Units</div>
         <div className="flex flex-wrap gap-2">
@@ -101,7 +104,7 @@ function RackConfigTab() {
               <span className="h-1.5 w-1.5 rounded-full bg-cyan" />{name}
             </div>
           ))}
-          {(editor?.palette ?? []).length === 0 && <div className="text-[11px] text-faint">All units assigned.</div>}
+          {(editor?.palette ?? []).length === 0 && <div className="text-[11px] text-faint">No units from other racks to assign here.</div>}
         </div>
       </Panel>
     </div>
@@ -109,35 +112,111 @@ function RackConfigTab() {
 }
 
 function UnitsConfigTab() {
-  const { data: units } = usePoll(() => api.configUnits(), 8000);
+  const { notify, ask } = useUi();
+  const { data: units, reload } = usePoll(() => api.configUnits(), 5000);
+  const { data: racks } = usePoll(() => api.configRacks(), 8000);
+  const [showForm, setShowForm] = useState(false);
+  const [name, setName] = useState("");
+  const [rack, setRack] = useState("A");
+  const [visa, setVisa] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const rackOptions = (racks ?? []).length ? racks!.map((r) => r.id) : ["A"];
+
+  const addUnit = async () => {
+    const trimmed = name.trim();
+    if (!trimmed) { notify("Unit name is required"); return; }
+    setBusy(true);
+    try {
+      await api.createUnit({ name: trimmed, rack, visa: visa.trim() || undefined });
+      notify(`Added ${trimmed}`);
+      setName(""); setVisa(""); setShowForm(false);
+      reload();
+    } catch (e) {
+      notify(e instanceof Error ? e.message : "Failed to add unit");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const toggleEnabled = async (u: any) => {
+    if (u.enabled) await api.disableUnit(u.name);
+    else await api.enableUnit(u.name);
+    notify(`${u.name} ${u.enabled ? "disabled" : "enabled"}`);
+    reload();
+  };
+
+  const deleteUnit = (u: any) => {
+    ask({
+      title: `Delete ${u.name}`,
+      message: `This permanently removes ${u.name} from the fleet and frees its rack slot. Its command-history and alarm records are kept for traceability, but its measurement history is deleted.`,
+      confirmLabel: "Delete unit", danger: true,
+      onConfirm: async () => {
+        await api.deleteUnit(u.name);
+        notify(`Deleted ${u.name}`);
+        reload();
+      },
+    });
+  };
+
   return (
     <Panel className="overflow-hidden">
       <div className="flex items-center justify-between border-b border-line px-4 py-3">
         <div className="text-[13px] font-semibold">Simulator Units</div>
-        <Btn variant="primary">+ Add Simulator Unit</Btn>
+        <Btn variant="primary" onClick={() => setShowForm((s) => !s)}>{showForm ? "Cancel" : "+ Add Simulator Unit"}</Btn>
       </div>
-      <div className="grid gap-2.5 border-b border-line px-4 py-2 font-mono text-[9.5px] uppercase tracking-wider text-faint" style={{ gridTemplateColumns: "90px 90px 50px 1fr 80px 80px" }}>
-        <span>Unit</span><span>Rack</span><span>Slot</span><span>VISA Resource</span><span>Poll</span><span>State</span>
+      <div className="grid gap-2.5 border-b border-line px-4 py-2 font-mono text-[9.5px] uppercase tracking-wider text-faint" style={{ gridTemplateColumns: "90px 90px 50px 1fr 80px 80px 110px" }}>
+        <span>Unit</span><span>Rack</span><span>Slot</span><span>VISA Resource</span><span>Poll</span><span>State</span><span>Actions</span>
       </div>
       {(units ?? []).map((u: any) => (
-        <div key={u.name} className="grid items-center gap-2.5 border-b border-[#161b24] px-4 py-2.5 font-mono text-[11px]" style={{ gridTemplateColumns: "90px 90px 50px 1fr 80px 80px" }}>
+        <div key={u.name} className="grid items-center gap-2.5 border-b border-[#161b24] px-4 py-2.5 font-mono text-[11px]" style={{ gridTemplateColumns: "90px 90px 50px 1fr 80px 80px 110px" }}>
           <span className="font-bold">{u.name}</span>
           <span className="text-[#cfd6e2]">{u.rack}</span>
           <span className="text-muted">{u.slot}</span>
           <span className="truncate text-[10px] text-muted">{u.visa}</span>
           <span className="text-muted">{u.poll}</span>
           <span className="font-semibold" style={{ color: u.enabled ? "#34d399" : "#5c6678" }}>{u.enabled ? "Enabled" : "Disabled"}</span>
+          <span className="flex gap-1.5">
+            <button onClick={() => toggleEnabled(u)} className="rounded border border-line2 bg-panel2 px-2 py-1 font-sans text-[10px] font-semibold text-ink">
+              {u.enabled ? "Disable" : "Enable"}
+            </button>
+            <button onClick={() => deleteUnit(u)} className="rounded border border-red/40 bg-red/10 px-2 py-1 font-sans text-[10px] font-semibold text-red">
+              Delete
+            </button>
+          </span>
         </div>
       ))}
-      <div className="border-t border-line px-4 py-3.5">
-        <div className="mb-2.5 text-[11px] text-muted">New unit fields</div>
-        <div className="grid grid-cols-4 gap-2.5">
-          <SelectField label="Mainframe" options={["E4360A-MF1"]} />
-          <SelectField label="Module / Slot" options={["Slot 4"]} />
-          <SelectField label="Output Channel" options={["CH1", "CH2"]} />
-          <SelectField label="Connection Type" options={["LAN / VXI-11", "GPIB"]} />
+      {(units ?? []).length === 0 && (
+        <div className="px-4 py-6 text-center text-[12px] text-faint">No simulator units configured yet.</div>
+      )}
+
+      {showForm && (
+        <div className="border-t border-line px-4 py-3.5">
+          <div className="mb-2.5 text-[11px] text-muted">New unit</div>
+          <div className="grid grid-cols-4 gap-2.5">
+            <div>
+              <label className="mb-1 block text-[10px] text-faint">Unit Name</label>
+              <input value={name} onChange={(e) => setName(e.target.value)} placeholder="SAS-03"
+                className="w-full rounded-md border border-line2 bg-bg px-2.5 py-2 font-mono text-[12px] text-ink" />
+            </div>
+            <div>
+              <label className="mb-1 block text-[10px] text-faint">Rack</label>
+              <select value={rack} onChange={(e) => setRack(e.target.value)}
+                className="w-full rounded-md border border-line2 bg-bg px-2.5 py-2 text-[12px] text-ink">
+                {rackOptions.map((r) => <option key={r} value={r}>{r}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="mb-1 block text-[10px] text-faint">VISA Resource (optional)</label>
+              <input value={visa} onChange={(e) => setVisa(e.target.value)} placeholder="auto-assigned if blank"
+                className="w-full rounded-md border border-line2 bg-bg px-2.5 py-2 font-mono text-[12px] text-ink" />
+            </div>
+            <div className="flex items-end">
+              <Btn variant="primary" className="w-full" disabled={busy} onClick={addUnit}>Create Unit</Btn>
+            </div>
+          </div>
         </div>
-      </div>
+      )}
     </Panel>
   );
 }
