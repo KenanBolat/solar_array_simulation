@@ -1,0 +1,201 @@
+"use client";
+import { useState } from "react";
+import { api } from "@/lib/api";
+import { usePoll } from "@/lib/useApi";
+import { usePageHeader } from "@/lib/header-context";
+import { Btn, Panel } from "@/components/ui";
+
+const TABS = [
+  "Rack Configuration", "Simulator Units", "Connection Profiles",
+  "Operational Limits", "Device Groups", "Measurement Retention", "User Permissions",
+];
+
+export default function ConfigPage() {
+  usePageHeader("Configuration", "Administrator · system setup");
+  const [tab, setTab] = useState(TABS[0]);
+
+  return (
+    <div className="p-5">
+      <div className="mb-4.5 flex flex-wrap gap-2">
+        {TABS.map((t) => (
+          <div key={t} onClick={() => setTab(t)}
+            className="cursor-pointer whitespace-nowrap rounded-md px-3.5 py-2 text-[12px] font-semibold"
+            style={{
+              color: t === tab ? "#fff" : "#8a95a8",
+              background: t === tab ? "#2dd4ee1f" : "transparent",
+              border: `1px solid ${t === tab ? "#2dd4ee55" : "transparent"}`,
+            }}>
+            {t}
+          </div>
+        ))}
+      </div>
+
+      {tab === "Rack Configuration" && <RackConfigTab />}
+      {tab === "Simulator Units" && <UnitsConfigTab />}
+      {tab === "Operational Limits" && <LimitsConfigTab />}
+      {!["Rack Configuration", "Simulator Units", "Operational Limits"].includes(tab) && (
+        <Panel className="p-10 text-center">
+          <div className="mb-1.5 text-[14px] font-semibold">{tab}</div>
+          <div className="text-[12px] text-muted">Connection profiles, device groups, retention policy and permission roles configure here.</div>
+        </Panel>
+      )}
+    </div>
+  );
+}
+
+function RackConfigTab() {
+  const { data: racks } = usePoll(() => api.configRacks(), 8000);
+  const { data: editor, reload } = usePoll(() => api.rackEditor("B"), 4000);
+  const rackB = (racks ?? []).find((r) => r.id === "B");
+  const [dragging, setDragging] = useState<string | null>(null);
+
+  const onDrop = async (slot: string) => {
+    if (!dragging) return;
+    await api.assignUnit(slot, dragging);
+    setDragging(null);
+    reload();
+  };
+
+  return (
+    <div className="grid grid-cols-[1fr_380px] items-start gap-4.5">
+      <Panel className="p-4">
+        <div className="mb-3.5 flex items-center justify-between">
+          <div className="text-[13px] font-semibold">Rack Configuration</div>
+          <Btn variant="primary">+ Add Rack</Btn>
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Rack Name" value={rackB?.name ?? "RACK-B"} />
+          <Field label="Location" value={rackB?.loc ?? ""} />
+          <Field label="Capacity (slots)" value={String(rackB?.cap ?? 8)} mono />
+          <Field label="Units Assigned" value={String(rackB?.unitsAssigned ?? 0)} mono />
+        </div>
+        <div className="mt-3.5 text-[11px] text-muted">Drag unassigned units from the palette into rack slots →</div>
+      </Panel>
+
+      <Panel className="p-3.5">
+        <div className="mb-2.5 text-[12px] font-semibold">Rack Position Editor · RACK-B</div>
+        <div className="mb-3.5 flex flex-col gap-1.5">
+          {(editor?.slots ?? []).map((s) => (
+            <div key={s.key}
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={() => onDrop(s.key)}
+              className="flex min-h-[42px] items-center gap-2 rounded-md px-3 py-2"
+              style={{
+                border: s.occ ? "1.5px solid #2c3543" : "1.5px dashed #2c3543",
+                background: s.occ ? "#1a1f29" : "#ffffff05",
+              }}>
+              <span className="w-[46px] flex-none font-mono text-[10px] text-faint">{s.label}</span>
+              {s.empty ? (
+                <span className="text-[11px] italic text-faint">drop unit here</span>
+              ) : (
+                <span className="font-mono text-[12px] font-bold text-cyan">{s.occ}</span>
+              )}
+            </div>
+          ))}
+        </div>
+        <div className="mb-2 text-[10px] uppercase tracking-wider text-faint">Unassigned Units</div>
+        <div className="flex flex-wrap gap-2">
+          {(editor?.palette ?? []).map((name) => (
+            <div key={name} draggable onDragStart={() => setDragging(name)}
+              className="flex cursor-grab items-center gap-2 rounded-md border border-cyan/40 bg-cyan/[0.08] px-2.5 py-2 text-[12px] font-semibold text-cyan">
+              <span className="h-1.5 w-1.5 rounded-full bg-cyan" />{name}
+            </div>
+          ))}
+          {(editor?.palette ?? []).length === 0 && <div className="text-[11px] text-faint">All units assigned.</div>}
+        </div>
+      </Panel>
+    </div>
+  );
+}
+
+function UnitsConfigTab() {
+  const { data: units } = usePoll(() => api.configUnits(), 8000);
+  return (
+    <Panel className="overflow-hidden">
+      <div className="flex items-center justify-between border-b border-line px-4 py-3">
+        <div className="text-[13px] font-semibold">Simulator Units</div>
+        <Btn variant="primary">+ Add Simulator Unit</Btn>
+      </div>
+      <div className="grid gap-2.5 border-b border-line px-4 py-2 font-mono text-[9.5px] uppercase tracking-wider text-faint" style={{ gridTemplateColumns: "90px 90px 50px 1fr 80px 80px" }}>
+        <span>Unit</span><span>Rack</span><span>Slot</span><span>VISA Resource</span><span>Poll</span><span>State</span>
+      </div>
+      {(units ?? []).map((u: any) => (
+        <div key={u.name} className="grid items-center gap-2.5 border-b border-[#161b24] px-4 py-2.5 font-mono text-[11px]" style={{ gridTemplateColumns: "90px 90px 50px 1fr 80px 80px" }}>
+          <span className="font-bold">{u.name}</span>
+          <span className="text-[#cfd6e2]">{u.rack}</span>
+          <span className="text-muted">{u.slot}</span>
+          <span className="truncate text-[10px] text-muted">{u.visa}</span>
+          <span className="text-muted">{u.poll}</span>
+          <span className="font-semibold" style={{ color: u.enabled ? "#34d399" : "#5c6678" }}>{u.enabled ? "Enabled" : "Disabled"}</span>
+        </div>
+      ))}
+      <div className="border-t border-line px-4 py-3.5">
+        <div className="mb-2.5 text-[11px] text-muted">New unit fields</div>
+        <div className="grid grid-cols-4 gap-2.5">
+          <SelectField label="Mainframe" options={["E4360A-MF1"]} />
+          <SelectField label="Module / Slot" options={["Slot 4"]} />
+          <SelectField label="Output Channel" options={["CH1", "CH2"]} />
+          <SelectField label="Connection Type" options={["LAN / VXI-11", "GPIB"]} />
+        </div>
+      </div>
+    </Panel>
+  );
+}
+
+function LimitsConfigTab() {
+  const { data: limits } = usePoll(() => api.configLimits(), 8000);
+  if (!limits) return null;
+  return (
+    <div className="grid grid-cols-2 items-start gap-4.5">
+      <Panel className="p-4">
+        <div className="mb-3.5 text-[13px] font-semibold">Operational Limits</div>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Maximum Voltage (V)" value={limits.max_voltage_v.toFixed(1)} mono />
+          <Field label="Maximum Current (A)" value={limits.max_current_a.toFixed(1)} mono />
+          <Field label="Maximum Power (W)" value={limits.max_power_w.toFixed(1)} mono />
+          <SelectField label="Allowed Output State" options={[limits.allowed_output_state, "OFF only (locked)"]} />
+        </div>
+      </Panel>
+      <Panel className="p-4">
+        <div className="mb-3.5 text-[13px] font-semibold">Alarm Thresholds &amp; Safe Shutdown</div>
+        <div className="flex flex-col gap-2.5">
+          <ThresholdRow label="Warning threshold · power" value={`${limits.warning_threshold_power_w} W`} color="#fbbf24" />
+          <ThresholdRow label="Critical threshold · power" value={`${limits.critical_threshold_power_w} W`} color="#f87171" />
+          <div className="flex items-center justify-between rounded-md border border-line2 bg-bg px-2.5 py-2.5">
+            <span className="text-[12px] text-[#cfd6e2]">Safe shutdown rule</span>
+            <span className="font-mono text-[12px] text-ink">{limits.safe_shutdown_rule}</span>
+          </div>
+        </div>
+      </Panel>
+    </div>
+  );
+}
+
+function ThresholdRow({ label, value, color }: { label: string; value: string; color: string }) {
+  return (
+    <div className="flex items-center justify-between rounded-md px-2.5 py-2.5" style={{ background: `${color}0d`, border: `1px solid ${color}33` }}>
+      <span className="text-[12px] text-[#cfd6e2]">{label}</span>
+      <span className="font-mono text-[13px]" style={{ color }}>{value}</span>
+    </div>
+  );
+}
+
+function Field({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+  return (
+    <div>
+      <label className="mb-1 block text-[10px] text-faint">{label}</label>
+      <input readOnly value={value} className={`w-full rounded-md border border-line2 bg-bg px-2.5 py-2 text-[13px] text-ink ${mono ? "font-mono" : ""}`} />
+    </div>
+  );
+}
+
+function SelectField({ label, options }: { label: string; options: string[] }) {
+  return (
+    <div>
+      <label className="mb-1 block text-[10px] text-faint">{label}</label>
+      <select className="w-full rounded-md border border-line2 bg-bg px-2.5 py-2 text-[12px] text-ink">
+        {options.map((o) => <option key={o}>{o}</option>)}
+      </select>
+    </div>
+  );
+}

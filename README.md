@@ -23,3 +23,34 @@ The design medium is **HTML/CSS/JS** — these are prototypes, not production co
 - `README.md` — this file
 - `chats/` — conversation transcripts (read these!)
 - `project/` — the `Solar Array Simulator Control Platform` project files (HTML prototypes, assets, components)
+
+---
+
+## Implementation
+
+The design above has been implemented as a real full-stack application:
+
+- `backend/` — FastAPI service. In-memory mock state (20 units / 3 racks, alarms,
+  command-audit log, scenario runs, scenario graph). No real hardware/SCPI driver —
+  this is a simulation only, by design (see the handoff conversation in `chats/`).
+- `frontend/` — Next.js (App Router) + TypeScript + Tailwind app implementing all
+  nine screens from the wireframe: Intro, Rack Overview, Simulator Control (with
+  Virtual Front Panel and guided Command Terminal modals), Measurements, Scenario
+  Runs, Command History, Alarms, Configuration (incl. drag-and-drop rack editor),
+  and the Scenario Builder canvas.
+
+### Run it
+
+```bash
+# backend (http://localhost:8000)
+cd backend
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+.venv/bin/python -m uvicorn app.main:app --port 8000
+
+# frontend (http://localhost:3000) — proxies /api/* to the backend above
+cd frontend
+npm install
+npm run dev
+```
+
+Then open http://localhost:3000.

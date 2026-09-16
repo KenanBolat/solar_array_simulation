@@ -1,0 +1,49 @@
+"""Mock instrument driver.
+
+This is a simulation only — it never opens a VISA/socket session and never
+talks to real hardware. There is no SCPI transport here at all: values are
+computed in software to make the UI feel alive. Wiring this platform to a
+real Keysight E4360A requires a separate, verified hardware driver; that is
+explicitly out of scope for this build (see README).
+"""
+import math
+import time
+
+
+def name_hash(name: str) -> int:
+    h = 0
+    for ch in name:
+        h = (h * 31 + ord(ch)) % 997
+    return h
+
+
+def compute_live_values(name: str, online: bool, output: bool, voltage_setpoint: float, current_limit: float,
+                         featured: bool = False, featured_v=None, featured_i=None, featured_p=None):
+    """Return (v, i, p) for a unit given its current commanded state."""
+    if featured and output:
+        return featured_v, featured_i, featured_p
+    if not online or not output:
+        return 0.0, 0.0, 0.0
+    h = name_hash(name)
+    jitter = math.sin(time.time() / 3.0 + h) * 0.03
+    v = min(voltage_setpoint, 27.4 + (h % 9) * 0.18) + jitter
+    i = min(current_limit, 3.6 + (h % 7) * 0.16) + jitter * 0.5
+    v = max(0.0, v)
+    i = max(0.0, i)
+    p = v * i
+    return round(v, 3), round(i, 3), round(p, 3)
+
+
+def gen_series(base: float, amp: float, vmin: float, vmax: float, n: int, seed: float):
+    """Deterministic-looking wiggly series, mirrors the wireframe's genSeries()."""
+    out = []
+    for idx in range(n):
+        val = (base + math.sin(idx * 0.55 + seed) * amp * 0.55
+               + math.sin(idx * 1.9 + seed * 1.3) * amp * 0.3
+               + math.sin(idx * 0.21 + 1) * amp * 0.15)
+        out.append(round(max(vmin, min(vmax, val)), 3))
+    return out
+
+
+RANGE_N = {"5 min": 30, "30 min": 48, "1 hour": 60, "24 hours": 84, "Custom": 48}
+RANGE_SEED = {"5 min": 1, "30 min": 2, "1 hour": 3, "24 hours": 4, "Custom": 2}
