@@ -12,7 +12,6 @@ export function Sidebar() {
 
   const navItems: { label: string; href: string }[] = [
     { label: "Overview", href: "/overview" },
-    { label: "Rack Explorer", href: "/overview" },
     { label: "Simulator Control", href: controlHref },
     { label: "Measurements", href: "/measurements" },
     { label: "Scenario Builder", href: "/scenarios/builder" },
@@ -20,7 +19,6 @@ export function Sidebar() {
     { label: "Command History", href: "/command-history" },
     { label: "Alarms", href: "/alarms" },
     { label: "Configuration", href: "/config" },
-    { label: "Administration", href: "/config" },
   ];
 
   return (
