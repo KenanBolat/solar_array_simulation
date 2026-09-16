@@ -1,0 +1,83 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "graphTooltip": 0,
+  "title": "SAS Control Platform — Overview",
+  "uid": "sas-overview",
+  "schemaVersion": 39,
+  "version": 1,
+  "time": { "from": "now-30m", "to": "now" },
+  "refresh": "10s",
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Devices online",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "fieldConfig": { "defaults": { "color": { "mode": "fixed", "fixedColor": "green" } } },
+      "targets": [{ "expr": "sas_devices_online", "refId": "A" }]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Devices offline",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "fieldConfig": { "defaults": { "color": { "mode": "fixed", "fixedColor": "red" } } },
+      "targets": [{ "expr": "sas_devices_offline", "refId": "A" }]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Active outputs",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "targets": [{ "expr": "sas_active_outputs", "refId": "A" }]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Active alarms",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+      "fieldConfig": { "defaults": { "color": { "mode": "fixed", "fixedColor": "orange" } } },
+      "targets": [{ "expr": "sas_active_alarms", "refId": "A" }]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Command rate by status",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "targets": [
+        { "expr": "sum by (status) (rate(sas_commands_total[1m]))", "legendFormat": "{{status}}", "refId": "A" }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Command latency p95 (s)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(sas_command_latency_seconds_bucket[5m])))",
+          "legendFormat": "p95",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Measurements written / s",
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 12 },
+      "targets": [{ "expr": "rate(sas_measurements_written_total[1m])", "legendFormat": "rows/s", "refId": "A" }]
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Failed commands / s",
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 12 },
+      "fieldConfig": { "defaults": { "color": { "mode": "fixed", "fixedColor": "red" } } },
+      "targets": [
+        { "expr": "sum by (template_id) (rate(sas_failed_commands_total[5m]))", "legendFormat": "{{template_id}}", "refId": "A" }
+      ]
+    }
+  ]
+}

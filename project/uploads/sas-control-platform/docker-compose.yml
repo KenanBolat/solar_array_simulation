@@ -1,0 +1,132 @@
+# Solar Array Simulator Control Platform — full stack.
+#
+#   docker compose up --build
+#       -> db (TimescaleDB), redis, api, frontend. Live simulated telemetry is
+#          produced by the API's in-process sampler (development mode), so the
+#          SSE live channels work end-to-end on a single node.
+#
+#   docker compose --profile workers up --build
+#       -> additionally runs the telemetry worker as its own process. Use this
+#          when you want telemetry out of the API process; for SSE fan-out
+#          across processes you would enable the Redis-backed event bus
+#          (see docs/HARDENING.md).
+#
+#   docker compose --profile observability up --build
+#       -> additionally runs Prometheus + Grafana.
+#
+# Everything defaults to SIMULATION MODE. Real hardware stays disabled until
+# SAS_HARDWARE_ENABLED=true is set explicitly (see docs/HARDWARE_INTEGRATION.md).
+
+services:
+  db:
+    image: timescale/timescaledb:2.17.2-pg16
+    environment:
+      POSTGRES_USER: sas
+      POSTGRES_PASSWORD: sas
+      POSTGRES_DB: sas
+    ports:
+      - "5432:5432"
+    volumes:
+      - sas_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sas -d sas"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  api:
+    build:
+      context: ./backend
+    environment:
+      ROLE: api
+      SAS_ENVIRONMENT: development
+      SAS_HARDWARE_ENABLED: "false"
+      SAS_DATABASE_URL: postgresql+asyncpg://sas:sas@db:5432/sas
+      SAS_DATABASE_URL_SYNC: postgresql+psycopg://sas:sas@db:5432/sas
+      SAS_REDIS_URL: redis://redis:6379/0
+      SAS_DEV_AUTH_ENABLED: "true"
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health').status==200 else 1)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  worker:
+    build:
+      context: ./backend
+    profiles: ["workers"]
+    command: ["python", "-m", "worker.telemetry_worker"]
+    environment:
+      ROLE: worker
+      SAS_ENVIRONMENT: production
+      SAS_HARDWARE_ENABLED: "false"
+      SAS_DATABASE_URL: postgresql+asyncpg://sas:sas@db:5432/sas
+      SAS_DATABASE_URL_SYNC: postgresql+psycopg://sas:sas@db:5432/sas
+      SAS_REDIS_URL: redis://redis:6379/0
+    depends_on:
+      db:
+        condition: service_healthy
+      api:
+        condition: service_started
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_BASE_URL: http://localhost:8000
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: http://localhost:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      api:
+        condition: service_started
+
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    profiles: ["observability"]
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    depends_on:
+      api:
+        condition: service_started
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    profiles: ["observability"]
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3001:3000"
+    depends_on:
+      prometheus:
+        condition: service_started
+
+volumes:
+  sas_pgdata:

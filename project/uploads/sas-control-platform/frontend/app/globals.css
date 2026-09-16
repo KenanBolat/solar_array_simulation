@@ -1,0 +1,151 @@
+@import "tailwindcss";
+
+/*
+  Solar Array Simulator Control Platform — visual system.
+
+  Direction: a dark ground-segment console. Graphite near-black surfaces, a
+  fine engineering grid, cyan for live/active, amber for warning, red for
+  alarm/e-stop, green for healthy output, violet for running scenarios.
+  Telemetry numerals are set in a monospace face so digits align in columns
+  like a real instrument readout; labels are a clean sans.
+*/
+
+@theme {
+  /* surfaces */
+  --color-base: #090d13;
+  --color-surface: #10151d;
+  --color-surface-2: #161d27;
+  --color-surface-3: #1c2531;
+  --color-hairline: #232e3d;
+  --color-hairline-strong: #324155;
+
+  /* text */
+  --color-ink: #e6edf6;
+  --color-ink-dim: #9aa7b8;
+  --color-ink-faint: #5f6b7c;
+
+  /* status */
+  --color-online: #2dd4bf;   /* teal-cyan: connected / online */
+  --color-active: #22d3ee;   /* cyan: active / selected */
+  --color-output: #34d399;   /* green: output enabled */
+  --color-scenario: #a78bfa; /* violet: running scenario */
+  --color-warning: #f59e0b;  /* amber */
+  --color-alarm: #f43f5e;    /* red */
+  --color-offline: #64748b;  /* slate: offline / unknown */
+
+  --font-sans: var(--font-inter, "Inter"), ui-sans-serif, system-ui, -apple-system,
+    "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: var(--font-jetbrains, "JetBrains Mono"), ui-monospace, "SF Mono",
+    "Cascadia Code", "Roboto Mono", Menlo, Consolas, monospace;
+
+  --radius-panel: 10px;
+}
+
+html,
+body {
+  background: var(--color-base);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Engineering grid backdrop — fine cyan-tinted lattice on the base surface. */
+.grid-backdrop {
+  background-color: var(--color-base);
+  background-image:
+    linear-gradient(rgba(45, 212, 191, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(45, 212, 191, 0.04) 1px, transparent 1px),
+    radial-gradient(circle at 50% 0%, rgba(34, 211, 238, 0.05), transparent 60%);
+  background-size: 28px 28px, 28px 28px, 100% 100%;
+}
+
+/* Panels: the recurring instrument-bay container. */
+.panel {
+  background: color-mix(in srgb, var(--color-surface) 92%, transparent);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-panel);
+  backdrop-filter: blur(2px);
+}
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.625rem 0.875rem;
+  border-bottom: 1px solid var(--color-hairline);
+}
+
+/* Eyebrow / instrument labels — uppercase, tracked out, faint. */
+.eyebrow {
+  font-size: 0.6875rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--color-ink-faint);
+  font-weight: 600;
+}
+
+/* Telemetry readout numerals. */
+.readout {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+/* Status dot with a soft halo, used on racks and badges. */
+.status-dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 9999px;
+  box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 18%, transparent);
+}
+.status-pulse {
+  animation: pulse 1.8s ease-in-out infinite;
+}
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+/* Scanline sweep for the live chart header. */
+@keyframes sweep {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(200%); }
+}
+
+/* Focus ring — keyboard accessible, cyan. */
+*:focus-visible {
+  outline: 2px solid var(--color-active);
+  outline-offset: 2px;
+}
+
+/* Scrollbars tuned to the dark surface. */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: var(--color-base); }
+::-webkit-scrollbar-thumb {
+  background: var(--color-surface-3);
+  border-radius: 6px;
+  border: 2px solid var(--color-base);
+}
+::-webkit-scrollbar-thumb:hover { background: var(--color-hairline-strong); }
+
+@media (prefers-reduced-motion: reduce) {
+  .status-pulse, * { animation: none !important; }
+}
+
+/* React Flow theming overrides for the scenario builder. */
+.react-flow__background { background: var(--color-base); }
+.react-flow__node { font-family: var(--font-sans); }
+.react-flow__edge-path { stroke: var(--color-hairline-strong); }
+.react-flow__controls {
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-hairline);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.react-flow__controls-button {
+  background: var(--color-surface-2);
+  border-bottom: 1px solid var(--color-hairline);
+  color: var(--color-ink-dim);
+}
+.react-flow__controls-button:hover { background: var(--color-surface-3); }
+.react-flow__minimap { background: var(--color-surface) !important; }
+.react-flow__attribution { display: none; }

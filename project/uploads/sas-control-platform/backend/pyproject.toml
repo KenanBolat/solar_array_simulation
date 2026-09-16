@@ -1,0 +1,27 @@
+[project]
+name = "sas-control-platform-backend"
+version = "0.1.0"
+description = "Solar Array Simulator Control Platform - backend API and instrument gateway"
+requires-python = ">=3.13"
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+src = ["app", "worker", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
+ignore = [
+    "E501",     # long lines tolerated in templates/seed
+    "B008",     # Depends()/Query() in defaults is the idiomatic FastAPI pattern
+    "ASYNC109", # command_timeout is a deliberate design parameter
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app", "worker"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]

@@ -1,0 +1,30 @@
+# --- Web framework ---
+fastapi==0.136.1
+uvicorn[standard]==0.38.0
+pydantic==2.13.3
+pydantic-settings==2.7.1
+
+# --- Database ---
+sqlalchemy==2.0.43
+alembic==1.14.1
+asyncpg==0.30.0
+psycopg[binary]==3.2.10
+
+# --- Instrument I/O (real hardware path; inert until enabled) ---
+pyvisa==1.14.1
+pyvisa-py==0.7.2
+
+# --- Infra / observability ---
+redis==5.2.1
+prometheus-client==0.21.1
+
+# --- Auth ---
+pyjwt==2.10.1
+passlib[bcrypt]==1.7.4
+
+# --- Test / lint ---
+pytest==8.3.4
+pytest-asyncio==0.25.2
+httpx==0.28.1
+aiosqlite==0.20.0
+ruff==0.9.2
