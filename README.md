@@ -54,3 +54,10 @@ npm run dev
 ```
 
 Then open http://localhost:3301.
+
+### Offline
+
+Fonts (IBM Plex Sans/Mono) are self-hosted under `frontend/public/fonts/` and
+loaded via local `@font-face` rules in `app/globals.css` — no `next/font/google`
+and no Google Fonts `<link>`. The frontend dev server and the running app need
+no internet access at all.
