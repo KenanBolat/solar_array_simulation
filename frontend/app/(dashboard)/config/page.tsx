@@ -120,10 +120,12 @@ function UnitsConfigTab() {
   const [rack, setRack] = useState("A");
   const [ip, setIp] = useState("");
   const [mac, setMac] = useState("");
+  const [port, setPort] = useState("5025");
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
   const [editIp, setEditIp] = useState("");
   const [editMac, setEditMac] = useState("");
+  const [editPort, setEditPort] = useState("5025");
 
   const rackOptions = (racks ?? []).length ? racks!.map((r) => r.id) : ["A"];
 
@@ -132,9 +134,12 @@ function UnitsConfigTab() {
     if (!trimmed) { notify("Unit name is required"); return; }
     setBusy(true);
     try {
-      await api.createUnit({ name: trimmed, rack, ipAddress: ip.trim() || undefined, macAddress: mac.trim() || undefined });
+      await api.createUnit({
+        name: trimmed, rack, ipAddress: ip.trim() || undefined, macAddress: mac.trim() || undefined,
+        scpiPort: port.trim() ? Number(port) : undefined,
+      });
       notify(`Added ${trimmed}`);
-      setName(""); setIp(""); setMac(""); setShowForm(false);
+      setName(""); setIp(""); setMac(""); setPort("5025"); setShowForm(false);
       reload();
     } catch (e) {
       notify(e instanceof Error ? e.message : "Failed to add unit");
@@ -147,12 +152,6 @@ function UnitsConfigTab() {
     if (u.enabled) await api.disableUnit(u.name);
     else await api.enableUnit(u.name);
     notify(`${u.name} ${u.enabled ? "disabled" : "enabled"}`);
-    reload();
-  };
-
-  const toggleSimLink = async (u: any) => {
-    await api.simulateOnline(u.name, !u.online);
-    notify(`${u.name} comms simulated ${u.online ? "DOWN" : "UP"}`);
     reload();
   };
 
@@ -169,9 +168,9 @@ function UnitsConfigTab() {
     });
   };
 
-  const startEdit = (u: any) => { setEditing(u.name); setEditIp(u.ipAddress); setEditMac(u.macAddress); };
+  const startEdit = (u: any) => { setEditing(u.name); setEditIp(u.ipAddress); setEditMac(u.macAddress); setEditPort(String(u.scpiPort)); };
   const saveEdit = async (name: string) => {
-    await api.updateNetwork(name, { ipAddress: editIp.trim(), macAddress: editMac.trim() });
+    await api.updateNetwork(name, { ipAddress: editIp.trim(), macAddress: editMac.trim(), scpiPort: editPort.trim() ? Number(editPort) : undefined });
     notify(`Updated network config · ${name}`);
     setEditing(null);
     reload();
@@ -194,15 +193,17 @@ function UnitsConfigTab() {
           {editing === u.name ? (
             <span className="flex items-center gap-1.5">
               <input value={editIp} onChange={(e) => setEditIp(e.target.value)} placeholder="IP address"
-                className="w-[120px] rounded border border-line2 bg-bg px-1.5 py-1 font-mono text-[10.5px] text-ink" />
+                className="w-[110px] rounded border border-line2 bg-bg px-1.5 py-1 font-mono text-[10.5px] text-ink" />
+              <input value={editPort} onChange={(e) => setEditPort(e.target.value)} placeholder="port"
+                className="w-[52px] rounded border border-line2 bg-bg px-1.5 py-1 font-mono text-[10.5px] text-ink" />
               <input value={editMac} onChange={(e) => setEditMac(e.target.value)} placeholder="MAC address"
-                className="w-[150px] rounded border border-line2 bg-bg px-1.5 py-1 font-mono text-[10.5px] text-ink" />
+                className="w-[140px] rounded border border-line2 bg-bg px-1.5 py-1 font-mono text-[10.5px] text-ink" />
               <button onClick={() => saveEdit(u.name)} className="rounded border border-cyan/50 bg-cyan/10 px-2 py-1 font-sans text-[10px] font-semibold text-cyan">Save</button>
               <button onClick={() => setEditing(null)} className="rounded border border-line2 bg-panel2 px-2 py-1 font-sans text-[10px] font-semibold text-ink">Cancel</button>
             </span>
           ) : (
-            <span className="flex min-w-0 flex-col cursor-pointer" onClick={() => startEdit(u)} title="Click to edit">
-              <span className="truncate text-[10.5px] text-[#cfd6e2]">{u.ipAddress || "no IP set"}</span>
+            <span className="flex min-w-0 flex-col cursor-pointer" onClick={() => startEdit(u)} title="Click to edit — reachability is probed on this IP:port every second">
+              <span className="truncate text-[10.5px] text-[#cfd6e2]">{u.ipAddress ? `${u.ipAddress}:${u.scpiPort}` : "no IP set"}</span>
               <span className="truncate text-[9.5px] text-faint">{u.macAddress || "no MAC set"}</span>
             </span>
           )}
@@ -211,7 +212,7 @@ function UnitsConfigTab() {
             <span className="font-semibold" style={{ color: u.enabled ? "#34d399" : "#5c6678" }}>{u.enabled ? "Enabled" : "Disabled"}</span>
             {u.enabled && (
               <span className="text-[9.5px] font-semibold" style={{ color: u.online ? "#34d399" : "#f87171" }}>
-                {u.online ? "● link up" : "● link down (simulated)"}
+                {u.online ? "● reachable" : "● unreachable"}
               </span>
             )}
           </span>
@@ -219,11 +220,6 @@ function UnitsConfigTab() {
             <button onClick={() => toggleEnabled(u)} className="rounded border border-line2 bg-panel2 px-2 py-1 font-sans text-[10px] font-semibold text-ink">
               {u.enabled ? "Disable" : "Enable"}
             </button>
-            {u.enabled && (
-              <button onClick={() => toggleSimLink(u)} className="rounded border border-amber/40 bg-amber/10 px-2 py-1 font-sans text-[10px] font-semibold text-amber">
-                {u.online ? "Sim link down" : "Sim link up"}
-              </button>
-            )}
             <button onClick={() => deleteUnit(u)} className="rounded border border-red/40 bg-red/10 px-2 py-1 font-sans text-[10px] font-semibold text-red">
               Delete
             </button>
@@ -237,7 +233,7 @@ function UnitsConfigTab() {
       {showForm && (
         <div className="border-t border-line px-4 py-3.5">
           <div className="mb-2.5 text-[11px] text-muted">New unit</div>
-          <div className="grid grid-cols-5 gap-2.5">
+          <div className="grid grid-cols-6 gap-2.5">
             <div>
               <label className="mb-1 block text-[10px] text-faint">Unit Name</label>
               <input value={name} onChange={(e) => setName(e.target.value)} placeholder="SAS-03"
@@ -256,6 +252,11 @@ function UnitsConfigTab() {
                 className="w-full rounded-md border border-line2 bg-bg px-2.5 py-2 font-mono text-[12px] text-ink" />
             </div>
             <div>
+              <label className="mb-1 block text-[10px] text-faint">Port</label>
+              <input value={port} onChange={(e) => setPort(e.target.value)} placeholder="5025"
+                className="w-full rounded-md border border-line2 bg-bg px-2.5 py-2 font-mono text-[12px] text-ink" />
+            </div>
+            <div>
               <label className="mb-1 block text-[10px] text-faint">MAC Address</label>
               <input value={mac} onChange={(e) => setMac(e.target.value)} placeholder="xx-xx-xx-xx-xx-xx"
                 className="w-full rounded-md border border-line2 bg-bg px-2.5 py-2 font-mono text-[12px] text-ink" />
@@ -263,6 +264,9 @@ function UnitsConfigTab() {
             <div className="flex items-end">
               <Btn variant="primary" className="w-full" disabled={busy} onClick={addUnit}>Create Unit</Btn>
             </div>
+          </div>
+          <div className="mt-2 text-[10px] text-faint">
+            Port defaults to 5025 (common Keysight SCPI-over-socket port) — not confirmed for the E4360A specifically. Reachability is a real TCP connect probe against IP:port every second; no SCPI is sent.
           </div>
         </div>
       )}

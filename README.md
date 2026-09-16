@@ -34,21 +34,27 @@ The design above has been implemented as a real full-stack application:
   seeded automatically on first run — see `backend/app/orm.py`/`seed.py`). Units,
   racks, measurements, command-audit log, alarms, and scenario runs are all real
   persisted rows; nothing resets on restart. A background poller (`app/poller.py`)
-  samples every *enabled* unit once a second and writes a real row: a genuine
-  reading if the unit is online, or an explicit null (`reachable=False`) if it
-  isn't — a de-energised-but-connected output legitimately reads `0.0`, which is
-  not the same thing as "no reading," and the schema keeps them distinct. Default
-  seed topology is a single RACK-A with two units: **SAS-01** (active, output on,
-  `10.1.20.126` / `80-09-02-05-6A-48`) and **SAS-02** (standby, output off,
-  `10.1.20.215` / `80-09-02-08-16-C4`). Units are addressed by **IP + MAC**; the
-  VISA resource string (`TCPIP0::<ip>::inst0::INSTR`) is derived automatically and
-  isn't user-facing. Units can be added, deleted, enabled/disabled, and had their
-  network info edited from Configuration → Simulator Units, which also exposes a
-  "Sim link up/down" toggle per unit to exercise the null-on-no-reading path
-  without real hardware. No real SCPI driver — this is a simulation only, by
-  design (see the handoff conversation in `chats/`); the attached E4360 manual
-  turned out to be the Service Guide, not the Programming Guide, so it doesn't
-  cover LAN/SCPI addressing — that's needed before any real driver work starts.
+  runs every second against every *enabled* unit and does two things for real:
+  (1) a genuine TCP connect probe to the unit's `ip_address:scpi_port` — no SCPI
+  sent, just "does anything answer" — which sets `online`, and (2) writes one
+  measurement row per unit: a computed reading if reachable, or an explicit null
+  if not. A de-energised-but-reachable output legitimately reads `0.0`, which is
+  not the same thing as "no reading," and the schema keeps them distinct.
+  Measurement *values* are still simulated (no verified SCPI query syntax exists
+  for this instrument — see below), but reachability is real: if the machine
+  running the backend can't route to the instrument's IP, the unit correctly
+  shows unreachable and every field goes null, exactly like a real outage would.
+  Default seed topology is a single RACK-A with two units: **SAS-01** (active,
+  output on, `10.1.20.126` / `80-09-02-05-6A-48`) and **SAS-02** (standby, output
+  off, `10.1.20.215` / `80-09-02-08-16-C4`). Units are addressed by **IP + MAC**
+  (+ a configurable SCPI port, default `5025` — unconfirmed for this instrument);
+  the VISA resource string (`TCPIP0::<ip>::inst0::INSTR`) is derived automatically
+  and isn't user-facing. Units can be added, deleted, enabled/disabled, and had
+  their network info edited from Configuration → Simulator Units. No real SCPI
+  driver — measurement retrieval is a simulation only, by design (see the handoff
+  conversation in `chats/`); the attached E4360 manual turned out to be the
+  Service Guide, not the Programming Guide, so it doesn't cover LAN/SCPI
+  addressing — that's needed before real measurement commands can be added.
 - `frontend/` — Next.js (App Router) + TypeScript + Tailwind app implementing all
   nine screens from the wireframe: Intro, Rack Overview, Simulator Control (with
   Virtual Front Panel and guided Command Terminal modals), Measurements, Scenario

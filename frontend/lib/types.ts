@@ -23,6 +23,7 @@ export interface UnitDetail extends Unit {
   connection: "CONNECTED" | "OFFLINE";
   ipAddress: string;
   macAddress: string;
+  scpiPort: number;
   visa: string;
   lastComm: string;
   firmware: string;

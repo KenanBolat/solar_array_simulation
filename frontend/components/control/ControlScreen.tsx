@@ -110,7 +110,7 @@ export function ControlScreen({ unitName }: { unitName: string }) {
               <Row k="Name" v={unit.name} />
               <Row k="Location" v={unit.pos} />
               <Row k="Connection" v={<span style={{ color: unit.online ? "#34d399" : "#f87171" }}>● {unit.connection}</span>} />
-              <Row k="IP Address" v={<span className="text-[10.5px]">{unit.ipAddress || "—"}</span>} />
+              <Row k="IP Address" v={<span className="text-[10.5px]">{unit.ipAddress ? `${unit.ipAddress}:${unit.scpiPort}` : "—"}</span>} />
               <Row k="MAC Address" v={<span className="text-[10px]">{unit.macAddress || "—"}</span>} />
               <Row k="Last comm" v={unit.lastComm} />
               <Row k="Firmware" v={unit.firmware} />

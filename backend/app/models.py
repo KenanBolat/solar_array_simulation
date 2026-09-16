@@ -36,13 +36,11 @@ class CreateUnitRequest(BaseModel):
     slot: Optional[int] = None
     ipAddress: Optional[str] = None
     macAddress: Optional[str] = None
+    scpiPort: int = 5025
     pollMs: int = 500
 
 
 class NetworkRequest(BaseModel):
     ipAddress: Optional[str] = None
     macAddress: Optional[str] = None
-
-
-class OnlineRequest(BaseModel):
-    online: bool
+    scpiPort: Optional[int] = None

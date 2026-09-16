@@ -59,7 +59,7 @@ def unit_to_detail_dict(u: orm.Unit):
     base = unit_to_dict(u)
     base.update({
         "connection": "CONNECTED" if (u.enabled and u.online) else "OFFLINE",
-        "ipAddress": u.ip_address, "macAddress": u.mac_address, "visa": u.visa,
+        "ipAddress": u.ip_address, "macAddress": u.mac_address, "scpiPort": u.scpi_port, "visa": u.visa,
         "lastComm": now_hhmmss() if (u.enabled and u.online) else "—",
         "firmware": u.firmware,
         "mode": "SIMULATION",
@@ -109,7 +109,7 @@ def summary(db: Session):
 
 
 def create_unit(db: Session, name: str, rack_id: str, ip_address: str = "", mac_address: str = "",
-                 poll_ms: int = 500, slot: int | None = None):
+                 scpi_port: int = 5025, poll_ms: int = 500, slot: int | None = None):
     rack = db.get(orm.Rack, rack_id)
     if not rack:
         raise ValueError(f"Unknown rack {rack_id}")
@@ -124,7 +124,8 @@ def create_unit(db: Session, name: str, rack_id: str, ip_address: str = "", mac_
     unit = orm.Unit(
         name=name, rack_id=rack_id, slot=slot, enabled=True, online=True, output=False,
         alarm="normal", voltage_setpoint=28.0, current_limit=5.0,
-        ip_address=ip_address, mac_address=mac_address, visa=derive_visa(ip_address), poll_ms=poll_ms,
+        ip_address=ip_address, mac_address=mac_address, scpi_port=scpi_port,
+        visa=derive_visa(ip_address), poll_ms=poll_ms,
         firmware="E4360A · v3.1.2", featured=False,
     )
     db.add(unit)
@@ -132,7 +133,8 @@ def create_unit(db: Session, name: str, rack_id: str, ip_address: str = "", mac_
     return unit
 
 
-def update_unit_network(db: Session, name: str, ip_address: str | None, mac_address: str | None):
+def update_unit_network(db: Session, name: str, ip_address: str | None, mac_address: str | None,
+                         scpi_port: int | None = None):
     unit = db.get(orm.Unit, name)
     if not unit:
         return None
@@ -141,6 +143,8 @@ def update_unit_network(db: Session, name: str, ip_address: str | None, mac_addr
         unit.visa = derive_visa(ip_address)
     if mac_address is not None:
         unit.mac_address = mac_address
+    if scpi_port is not None:
+        unit.scpi_port = scpi_port
     db.commit()
     return unit
 
@@ -162,21 +166,6 @@ def set_unit_enabled(db: Session, name: str, enabled: bool):
     unit.enabled = enabled
     unit.online = enabled
     if not enabled:
-        unit.output = False
-    db.commit()
-    return unit
-
-
-def set_unit_online(db: Session, name: str, online: bool):
-    """Comms simulation only — independent of `enabled`. This is the hook a
-    real driver's connection-health check would eventually drive; for now
-    it's exposed so comms loss (and the resulting null readings) can be
-    demonstrated without waiting on real hardware."""
-    unit = db.get(orm.Unit, name)
-    if not unit:
-        return None
-    unit.online = online
-    if not online:
         unit.output = False
     db.commit()
     return unit
@@ -428,7 +417,7 @@ def config_units(db: Session):
     for u in list_units(db):
         out.append({
             "name": u.name, "rack": u.rack.name, "slot": f"S{u.slot}",
-            "ipAddress": u.ip_address, "macAddress": u.mac_address, "visa": u.visa,
+            "ipAddress": u.ip_address, "macAddress": u.mac_address, "scpiPort": u.scpi_port, "visa": u.visa,
             "poll": f"{u.poll_ms} ms", "enabled": u.enabled, "online": u.online,
         })
     return out

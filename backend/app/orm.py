@@ -26,6 +26,7 @@ class Unit(Base):
     current_limit = Column(Float, nullable=False, default=5.0)
     ip_address = Column(String, nullable=False, default="")
     mac_address = Column(String, nullable=False, default="")
+    scpi_port = Column(Integer, nullable=False, default=5025)  # reachability probe port — not confirmed against the E4360 Programming Guide, adjust if wrong
     visa = Column(String, nullable=False, default="")  # derived from ip_address — not user-facing
     poll_ms = Column(Integer, nullable=False, default=500)
     firmware = Column(String, nullable=False, default="E4360A · v3.1.2")
