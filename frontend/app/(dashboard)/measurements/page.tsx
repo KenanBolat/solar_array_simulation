@@ -7,7 +7,21 @@ import { Btn, Chip, Panel, STATUS_COLOR } from "@/components/ui";
 import { useUi } from "@/lib/ui-context";
 
 const RANGES = ["5 min", "30 min", "1 hour", "24 hours"];
-const Q_COLOR: Record<string, string> = { ok: "#34d399", interp: "#fbbf24", stale: "#f87171" };
+const Q_COLOR: Record<string, string> = { ok: "#34d399", no_reading: "#f87171" };
+
+function seriesToSegments(values: (number | null)[], lo: number, hi: number, w: number, h: number): string[] {
+  const segments: string[][] = [[]];
+  values.forEach((v, idx) => {
+    if (v == null) {
+      if (segments[segments.length - 1].length) segments.push([]);
+      return;
+    }
+    const x = (idx / Math.max(1, values.length - 1)) * w;
+    const y = h - ((v - lo) / (hi - lo || 1)) * h;
+    segments[segments.length - 1].push(`${x.toFixed(1)},${Math.max(2, Math.min(h - 2, y)).toFixed(1)}`);
+  });
+  return segments.filter((s) => s.length).map((s) => s.join(" "));
+}
 
 export default function MeasurementsPage() {
   usePageHeader("Measurements", "Telemetry explorer · multi-unit comparison");
@@ -27,7 +41,10 @@ export default function MeasurementsPage() {
     }
   }, [units]);
 
-  const online = (units ?? []).filter((u) => u.online).slice(0, 10);
+  // Enabled units stay pickable even while their comms link is down, so you
+  // can still pull up their history from before/after the outage — only
+  // fully-removed (disabled) units drop off the list.
+  const pickable = (units ?? []).filter((u) => u.enabled).slice(0, 10);
 
   const toggle = (name: string) =>
     setSelected((s) => (s.includes(name) ? s.filter((x) => x !== name) : [...s, name]));
@@ -38,14 +55,18 @@ export default function MeasurementsPage() {
         <div>
           <div className="mb-1.5 text-[10px] uppercase tracking-wider text-faint">Units compared</div>
           <div className="flex flex-wrap gap-1.5">
-            {online.map((u) => {
+            {pickable.map((u) => {
               const active = selected.includes(u.name);
               const c = STATUS_COLOR[u.statusColor];
               return (
-                <div key={u.name} onClick={() => toggle(u.name)}
+                <div key={u.name} onClick={() => toggle(u.name)} title={u.online ? undefined : "Comms currently down"}
                   className="cursor-pointer rounded-md px-2.5 py-1 font-mono text-[11px] font-semibold"
-                  style={{ color: active ? "#04121a" : "#8a95a8", background: active ? c : "transparent", border: `1px solid ${active ? c : "#232a36"}` }}>
-                  {u.name}
+                  style={{
+                    color: active ? "#04121a" : u.online ? "#8a95a8" : "#f87171",
+                    background: active ? c : "transparent",
+                    border: `1px solid ${active ? c : u.online ? "#232a36" : "#f8717155"}`,
+                  }}>
+                  {u.name}{!u.online && !active && " ⚠"}
                 </div>
               );
             })}
@@ -91,14 +112,13 @@ export default function MeasurementsPage() {
                     <svg viewBox="0 0 560 80" preserveAspectRatio="none" className="h-[84px] w-full rounded-md border border-line bg-[#0e1117]">
                       {(meas?.series ?? []).map((s) => {
                         const values = s[k];
-                        const min = Math.min(...values, 0), max = Math.max(...values, 1);
+                        const real = values.filter((v): v is number => v != null);
+                        const min = Math.min(...real, 0), max = Math.max(...real, 1);
                         const pad = (max - min) * 0.1 || 1;
-                        const points = values.map((v, idx) => {
-                          const x = (idx / Math.max(1, values.length - 1)) * 560;
-                          const y = 80 - ((v - (min - pad)) / (max - min + pad * 2 || 1)) * 80;
-                          return `${x.toFixed(1)},${Math.max(2, Math.min(78, y)).toFixed(1)}`;
-                        }).join(" ");
-                        return <polyline key={s.name} points={points} fill="none" stroke={STATUS_COLOR[s.statusColor]} strokeWidth={1.6} />;
+                        const segments = seriesToSegments(values, min - pad, max + pad, 560, 80);
+                        return segments.map((points, idx) => (
+                          <polyline key={`${s.name}-${idx}`} points={points} fill="none" stroke={STATUS_COLOR[s.statusColor]} strokeWidth={1.6} />
+                        ));
                       })}
                     </svg>
                   </div>
@@ -121,9 +141,9 @@ export default function MeasurementsPage() {
                 <div key={idx} className="grid items-center gap-2.5 border-b border-[#161b24] px-3.5 py-2 font-mono text-[11px]" style={{ gridTemplateColumns: "76px 66px 1fr 1fr 1fr 52px 66px" }}>
                   <span className="font-bold" style={{ color: u ? STATUS_COLOR[u.statusColor] : "#e6eaf2" }}>{m.unit}</span>
                   <span className="text-muted">{m.time}</span>
-                  <span>{m.v.toFixed(3)}<span className="text-faint"> V</span></span>
-                  <span>{m.i.toFixed(3)}<span className="text-faint"> A</span></span>
-                  <span>{m.p.toFixed(2)}<span className="text-faint"> W</span></span>
+                  <span>{m.v != null ? <>{m.v.toFixed(3)}<span className="text-faint"> V</span></> : <span className="text-faint">—</span>}</span>
+                  <span>{m.i != null ? <>{m.i.toFixed(3)}<span className="text-faint"> A</span></> : <span className="text-faint">—</span>}</span>
+                  <span>{m.p != null ? <>{m.p.toFixed(2)}<span className="text-faint"> W</span></> : <span className="text-faint">—</span>}</span>
                   <span className="text-muted">{m.out}</span>
                   <span>
                     <span className="rounded px-1.5 py-0.5 text-[9.5px] font-semibold" style={{ color: Q_COLOR[m.q], border: `1px solid ${Q_COLOR[m.q]}55` }}>{m.q}</span>
@@ -137,7 +157,7 @@ export default function MeasurementsPage() {
         <Panel className="p-3.5">
           <div className="mb-2.5 text-[11px] uppercase tracking-wider text-muted">Retention &amp; quality</div>
           <div className="flex flex-col gap-2 font-mono text-[11.5px]">
-            <div className="flex justify-between"><span className="text-faint">Poll interval</span><span>500 ms</span></div>
+            <div className="flex justify-between"><span className="text-faint">Poll interval</span><span>1 s</span></div>
             <div className="flex justify-between"><span className="text-faint">Raw retention</span><span>7 days</span></div>
             <div className="flex justify-between"><span className="text-faint">Downsampled</span><span>1 year @ 1 min</span></div>
             <div className="flex justify-between"><span className="text-faint">Units plotted</span><span>{meas?.count ?? 0}</span></div>
@@ -145,9 +165,8 @@ export default function MeasurementsPage() {
           <div className="my-3.5 h-px bg-line" />
           <div className="mb-2 text-[10px] uppercase tracking-wider text-faint">Quality flags</div>
           <div className="flex flex-col gap-1.5 text-[11px] text-[#cfd6e2]">
-            <div className="flex items-center gap-2"><span className="h-1.5 w-1.5 rounded-full bg-green" />ok — sampled from device</div>
-            <div className="flex items-center gap-2"><span className="h-1.5 w-1.5 rounded-full bg-amber" />interp — gap filled</div>
-            <div className="flex items-center gap-2"><span className="h-1.5 w-1.5 rounded-full bg-red" />stale — poll missed</div>
+            <div className="flex items-center gap-2"><span className="h-1.5 w-1.5 rounded-full bg-green" />ok — real reading from the unit</div>
+            <div className="flex items-center gap-2"><span className="h-1.5 w-1.5 rounded-full bg-red" />no_reading — comms down when polled, stored as null</div>
           </div>
         </Panel>
       </div>

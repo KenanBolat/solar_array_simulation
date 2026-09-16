@@ -118,8 +118,12 @@ function UnitsConfigTab() {
   const [showForm, setShowForm] = useState(false);
   const [name, setName] = useState("");
   const [rack, setRack] = useState("A");
-  const [visa, setVisa] = useState("");
+  const [ip, setIp] = useState("");
+  const [mac, setMac] = useState("");
   const [busy, setBusy] = useState(false);
+  const [editing, setEditing] = useState<string | null>(null);
+  const [editIp, setEditIp] = useState("");
+  const [editMac, setEditMac] = useState("");
 
   const rackOptions = (racks ?? []).length ? racks!.map((r) => r.id) : ["A"];
 
@@ -128,9 +132,9 @@ function UnitsConfigTab() {
     if (!trimmed) { notify("Unit name is required"); return; }
     setBusy(true);
     try {
-      await api.createUnit({ name: trimmed, rack, visa: visa.trim() || undefined });
+      await api.createUnit({ name: trimmed, rack, ipAddress: ip.trim() || undefined, macAddress: mac.trim() || undefined });
       notify(`Added ${trimmed}`);
-      setName(""); setVisa(""); setShowForm(false);
+      setName(""); setIp(""); setMac(""); setShowForm(false);
       reload();
     } catch (e) {
       notify(e instanceof Error ? e.message : "Failed to add unit");
@@ -143,6 +147,12 @@ function UnitsConfigTab() {
     if (u.enabled) await api.disableUnit(u.name);
     else await api.enableUnit(u.name);
     notify(`${u.name} ${u.enabled ? "disabled" : "enabled"}`);
+    reload();
+  };
+
+  const toggleSimLink = async (u: any) => {
+    await api.simulateOnline(u.name, !u.online);
+    notify(`${u.name} comms simulated ${u.online ? "DOWN" : "UP"}`);
     reload();
   };
 
@@ -159,27 +169,61 @@ function UnitsConfigTab() {
     });
   };
 
+  const startEdit = (u: any) => { setEditing(u.name); setEditIp(u.ipAddress); setEditMac(u.macAddress); };
+  const saveEdit = async (name: string) => {
+    await api.updateNetwork(name, { ipAddress: editIp.trim(), macAddress: editMac.trim() });
+    notify(`Updated network config · ${name}`);
+    setEditing(null);
+    reload();
+  };
+
   return (
     <Panel className="overflow-hidden">
       <div className="flex items-center justify-between border-b border-line px-4 py-3">
         <div className="text-[13px] font-semibold">Simulator Units</div>
         <Btn variant="primary" onClick={() => setShowForm((s) => !s)}>{showForm ? "Cancel" : "+ Add Simulator Unit"}</Btn>
       </div>
-      <div className="grid gap-2.5 border-b border-line px-4 py-2 font-mono text-[9.5px] uppercase tracking-wider text-faint" style={{ gridTemplateColumns: "90px 90px 50px 1fr 80px 80px 110px" }}>
-        <span>Unit</span><span>Rack</span><span>Slot</span><span>VISA Resource</span><span>Poll</span><span>State</span><span>Actions</span>
+      <div className="grid gap-2.5 border-b border-line px-4 py-2 font-mono text-[9.5px] uppercase tracking-wider text-faint" style={{ gridTemplateColumns: "80px 70px 40px 1fr 60px 130px 160px" }}>
+        <span>Unit</span><span>Rack</span><span>Slot</span><span>Network (IP / MAC)</span><span>Poll</span><span>State</span><span>Actions</span>
       </div>
       {(units ?? []).map((u: any) => (
-        <div key={u.name} className="grid items-center gap-2.5 border-b border-[#161b24] px-4 py-2.5 font-mono text-[11px]" style={{ gridTemplateColumns: "90px 90px 50px 1fr 80px 80px 110px" }}>
+        <div key={u.name} className="grid items-center gap-2.5 border-b border-[#161b24] px-4 py-2.5 font-mono text-[11px]" style={{ gridTemplateColumns: "80px 70px 40px 1fr 60px 130px 160px" }}>
           <span className="font-bold">{u.name}</span>
           <span className="text-[#cfd6e2]">{u.rack}</span>
           <span className="text-muted">{u.slot}</span>
-          <span className="truncate text-[10px] text-muted">{u.visa}</span>
+          {editing === u.name ? (
+            <span className="flex items-center gap-1.5">
+              <input value={editIp} onChange={(e) => setEditIp(e.target.value)} placeholder="IP address"
+                className="w-[120px] rounded border border-line2 bg-bg px-1.5 py-1 font-mono text-[10.5px] text-ink" />
+              <input value={editMac} onChange={(e) => setEditMac(e.target.value)} placeholder="MAC address"
+                className="w-[150px] rounded border border-line2 bg-bg px-1.5 py-1 font-mono text-[10.5px] text-ink" />
+              <button onClick={() => saveEdit(u.name)} className="rounded border border-cyan/50 bg-cyan/10 px-2 py-1 font-sans text-[10px] font-semibold text-cyan">Save</button>
+              <button onClick={() => setEditing(null)} className="rounded border border-line2 bg-panel2 px-2 py-1 font-sans text-[10px] font-semibold text-ink">Cancel</button>
+            </span>
+          ) : (
+            <span className="flex min-w-0 flex-col cursor-pointer" onClick={() => startEdit(u)} title="Click to edit">
+              <span className="truncate text-[10.5px] text-[#cfd6e2]">{u.ipAddress || "no IP set"}</span>
+              <span className="truncate text-[9.5px] text-faint">{u.macAddress || "no MAC set"}</span>
+            </span>
+          )}
           <span className="text-muted">{u.poll}</span>
-          <span className="font-semibold" style={{ color: u.enabled ? "#34d399" : "#5c6678" }}>{u.enabled ? "Enabled" : "Disabled"}</span>
-          <span className="flex gap-1.5">
+          <span className="flex flex-col gap-0.5">
+            <span className="font-semibold" style={{ color: u.enabled ? "#34d399" : "#5c6678" }}>{u.enabled ? "Enabled" : "Disabled"}</span>
+            {u.enabled && (
+              <span className="text-[9.5px] font-semibold" style={{ color: u.online ? "#34d399" : "#f87171" }}>
+                {u.online ? "● link up" : "● link down (simulated)"}
+              </span>
+            )}
+          </span>
+          <span className="flex flex-wrap gap-1.5">
             <button onClick={() => toggleEnabled(u)} className="rounded border border-line2 bg-panel2 px-2 py-1 font-sans text-[10px] font-semibold text-ink">
               {u.enabled ? "Disable" : "Enable"}
             </button>
+            {u.enabled && (
+              <button onClick={() => toggleSimLink(u)} className="rounded border border-amber/40 bg-amber/10 px-2 py-1 font-sans text-[10px] font-semibold text-amber">
+                {u.online ? "Sim link down" : "Sim link up"}
+              </button>
+            )}
             <button onClick={() => deleteUnit(u)} className="rounded border border-red/40 bg-red/10 px-2 py-1 font-sans text-[10px] font-semibold text-red">
               Delete
             </button>
@@ -193,7 +237,7 @@ function UnitsConfigTab() {
       {showForm && (
         <div className="border-t border-line px-4 py-3.5">
           <div className="mb-2.5 text-[11px] text-muted">New unit</div>
-          <div className="grid grid-cols-4 gap-2.5">
+          <div className="grid grid-cols-5 gap-2.5">
             <div>
               <label className="mb-1 block text-[10px] text-faint">Unit Name</label>
               <input value={name} onChange={(e) => setName(e.target.value)} placeholder="SAS-03"
@@ -207,8 +251,13 @@ function UnitsConfigTab() {
               </select>
             </div>
             <div>
-              <label className="mb-1 block text-[10px] text-faint">VISA Resource (optional)</label>
-              <input value={visa} onChange={(e) => setVisa(e.target.value)} placeholder="auto-assigned if blank"
+              <label className="mb-1 block text-[10px] text-faint">IP Address</label>
+              <input value={ip} onChange={(e) => setIp(e.target.value)} placeholder="10.1.20.x"
+                className="w-full rounded-md border border-line2 bg-bg px-2.5 py-2 font-mono text-[12px] text-ink" />
+            </div>
+            <div>
+              <label className="mb-1 block text-[10px] text-faint">MAC Address</label>
+              <input value={mac} onChange={(e) => setMac(e.target.value)} placeholder="xx-xx-xx-xx-xx-xx"
                 className="w-full rounded-md border border-line2 bg-bg px-2.5 py-2 font-mono text-[12px] text-ink" />
             </div>
             <div className="flex items-end">

@@ -10,9 +10,9 @@ export interface Unit {
   alarm: "normal" | "warning" | "offline";
   statusText: "OFFLINE" | "WARNING" | "ACTIVE" | "ONLINE";
   statusColor: StatusColor;
-  voltage: number;
-  current: number;
-  power: number;
+  voltage: number | null;
+  current: number | null;
+  power: number | null;
   voltageSetpoint: number;
   currentLimit: number;
   featured: boolean;
@@ -21,6 +21,8 @@ export interface Unit {
 
 export interface UnitDetail extends Unit {
   connection: "CONNECTED" | "OFFLINE";
+  ipAddress: string;
+  macAddress: string;
   visa: string;
   lastComm: string;
   firmware: string;
@@ -98,27 +100,27 @@ export interface RunDetail extends Run {
 export interface Telemetry {
   t: string;
   n: number;
-  v: number[];
-  i: number[];
-  p: number[];
+  v: (number | null)[];
+  i: (number | null)[];
+  p: (number | null)[];
 }
 
 export interface MeasurementSeries {
   name: string;
   statusColor: StatusColor;
-  v: number[];
-  i: number[];
-  p: number[];
+  v: (number | null)[];
+  i: (number | null)[];
+  p: (number | null)[];
 }
 
 export interface MeasurementRow {
   unit: string;
   time: string;
-  v: number;
-  i: number;
-  p: number;
+  v: number | null;
+  i: number | null;
+  p: number | null;
   out: string;
-  q: "ok" | "interp" | "stale";
+  q: "ok" | "no_reading";
 }
 
 export interface Measurements {

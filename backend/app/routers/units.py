@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 
 from .. import state
 from ..db import get_db
-from ..models import OutputRequest, SetpointRequest, ProfileRequest, TerminalExecuteRequest, CreateUnitRequest
+from ..models import OutputRequest, SetpointRequest, ProfileRequest, TerminalExecuteRequest, CreateUnitRequest, NetworkRequest, OnlineRequest
 
 router = APIRouter(prefix="/api/units", tags=["units"])
 
@@ -27,9 +27,29 @@ def create_unit(body: CreateUnitRequest, db: Session = Depends(get_db)):
     if state.get_unit(db, body.name):
         raise HTTPException(409, f"Unit {body.name} already exists")
     try:
-        u = state.create_unit(db, body.name, body.rack, visa=body.visa or "", poll_ms=body.pollMs, slot=body.slot)
+        u = state.create_unit(db, body.name, body.rack, ip_address=body.ipAddress or "",
+                               mac_address=body.macAddress or "", poll_ms=body.pollMs, slot=body.slot)
     except ValueError as e:
         raise HTTPException(400, str(e))
+    return state.unit_to_detail_dict(u)
+
+
+@router.post("/{name}/simulate-online")
+def simulate_online(name: str, body: OnlineRequest, db: Session = Depends(get_db)):
+    """Comms-loss simulator, independent of enable/disable — see
+    state.set_unit_online. Not something a real driver would expose; this is
+    purely for exercising the null-on-no-reading path without real hardware."""
+    u = state.set_unit_online(db, name, body.online)
+    if not u:
+        raise HTTPException(404, f"Unknown unit {name}")
+    return state.unit_to_detail_dict(u)
+
+
+@router.post("/{name}/network")
+def update_network(name: str, body: NetworkRequest, db: Session = Depends(get_db)):
+    u = state.update_unit_network(db, name, body.ipAddress, body.macAddress)
+    if not u:
+        raise HTTPException(404, f"Unknown unit {name}")
     return state.unit_to_detail_dict(u)
 
 
@@ -141,10 +161,15 @@ def terminal_execute(name: str, body: TerminalExecuteRequest, db: Session = Depe
         return {"line": f"safe shutdown — output disabled, unit to standby · completed · corr {entry['cid']}", "unit": state.unit_to_dict(u)}
     if body.act == "read":
         v, i, p = state.unit_live_values(u)
-        entry = state.log_command(db, "system", name, "read_measurements", lat="42 ms", rb=False)
+        entry = state.log_command(db, "system", name, "read_measurements",
+                                   lat="42 ms", rb=False, st="OK" if v is not None else "ERR")
+        if v is None:
+            return {"line": f"read_measurements → no reading — comms down · 42 ms · corr {entry['cid']}", "unit": state.unit_to_dict(u)}
         return {"line": f"read_measurements → {v:.3f} V, {i:.3f} A, {p:.2f} W · 42 ms · corr {entry['cid']}", "unit": state.unit_to_dict(u)}
     if body.act == "status":
         v, i, p = state.unit_live_values(u)
+        if v is None:
+            return {"line": f"comms down · no cached reading · alarm {u.alarm} · simulation", "unit": state.unit_to_dict(u)}
         return {"line": (f"output {'ON' if u.output else 'OFF'} · {v:.3f} V · limit {u.current_limit:.2f} A\n"
                           f"state {'stable' if u.output else 'output_disabled'} · comms healthy · alarm {u.alarm} · simulation"),
                 "unit": state.unit_to_dict(u)}

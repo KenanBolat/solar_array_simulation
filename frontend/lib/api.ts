@@ -35,11 +35,15 @@ export const api = {
     j<{ line: string; unit: Unit }>(`/api/units/${name}/terminal/execute`, {
       method: "POST", body: JSON.stringify({ act, value, label }),
     }),
-  createUnit: (body: { name: string; rack: string; slot?: number; visa?: string; pollMs?: number }) =>
+  createUnit: (body: { name: string; rack: string; slot?: number; ipAddress?: string; macAddress?: string; pollMs?: number }) =>
     j<UnitDetail>("/api/units", { method: "POST", body: JSON.stringify(body) }),
   deleteUnit: (name: string) => j<{ ok: boolean }>(`/api/units/${name}`, { method: "DELETE" }),
   enableUnit: (name: string) => j<UnitDetail>(`/api/units/${name}/enable`, { method: "POST" }),
   disableUnit: (name: string) => j<UnitDetail>(`/api/units/${name}/disable`, { method: "POST" }),
+  updateNetwork: (name: string, body: { ipAddress?: string; macAddress?: string }) =>
+    j<UnitDetail>(`/api/units/${name}/network`, { method: "POST", body: JSON.stringify(body) }),
+  simulateOnline: (name: string, online: boolean) =>
+    j<UnitDetail>(`/api/units/${name}/simulate-online`, { method: "POST", body: JSON.stringify({ online }) }),
 
   measurements: (units: string[], range: string) =>
     j<Measurements>(`/api/measurements?units=${encodeURIComponent(units.join(","))}&range=${encodeURIComponent(range)}`),

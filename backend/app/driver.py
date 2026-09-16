@@ -19,10 +19,17 @@ def name_hash(name: str) -> int:
 
 def compute_live_values(name: str, online: bool, output: bool, voltage_setpoint: float, current_limit: float,
                          featured: bool = False, featured_v=None, featured_i=None, featured_p=None):
-    """Return (v, i, p) for a unit given its current commanded state."""
+    """Return (v, i, p) for a unit given its current commanded state.
+
+    (None, None, None) means "no reading" — comms are down, nothing was
+    retrieved. (0.0, 0.0, 0.0) is a real reading of a de-energised output.
+    These are not the same thing and callers must not conflate them.
+    """
+    if not online:
+        return None, None, None
     if featured and output:
         return featured_v, featured_i, featured_p
-    if not online or not output:
+    if not output:
         return 0.0, 0.0, 0.0
     h = name_hash(name)
     jitter = math.sin(time.time() / 3.0 + h) * 0.03

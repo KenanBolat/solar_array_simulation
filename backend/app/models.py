@@ -34,5 +34,15 @@ class CreateUnitRequest(BaseModel):
     name: str
     rack: str = "A"
     slot: Optional[int] = None
-    visa: Optional[str] = None
+    ipAddress: Optional[str] = None
+    macAddress: Optional[str] = None
     pollMs: int = 500
+
+
+class NetworkRequest(BaseModel):
+    ipAddress: Optional[str] = None
+    macAddress: Optional[str] = None
+
+
+class OnlineRequest(BaseModel):
+    online: bool

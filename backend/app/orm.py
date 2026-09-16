@@ -24,7 +24,9 @@ class Unit(Base):
     alarm = Column(String, nullable=False, default="normal")  # normal | warning | offline
     voltage_setpoint = Column(Float, nullable=False, default=28.0)
     current_limit = Column(Float, nullable=False, default=5.0)
-    visa = Column(String, nullable=False, default="")
+    ip_address = Column(String, nullable=False, default="")
+    mac_address = Column(String, nullable=False, default="")
+    visa = Column(String, nullable=False, default="")  # derived from ip_address — not user-facing
     poll_ms = Column(Integer, nullable=False, default=500)
     firmware = Column(String, nullable=False, default="E4360A · v3.1.2")
     featured = Column(Boolean, nullable=False, default=False)
@@ -37,10 +39,11 @@ class Measurement(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     unit_name = Column(String, ForeignKey("units.name"), nullable=False, index=True)
     ts = Column(DateTime, nullable=False, index=True)
-    voltage = Column(Float, nullable=False)
-    current = Column(Float, nullable=False)
-    power = Column(Float, nullable=False)
-    quality = Column(String, nullable=False, default="ok")
+    reachable = Column(Boolean, nullable=False, default=True)
+    voltage = Column(Float, nullable=True)
+    current = Column(Float, nullable=True)
+    power = Column(Float, nullable=True)
+    quality = Column(String, nullable=False, default="ok")  # ok | no_reading
 
 
 class CommandHistoryRow(Base):

@@ -110,7 +110,8 @@ export function ControlScreen({ unitName }: { unitName: string }) {
               <Row k="Name" v={unit.name} />
               <Row k="Location" v={unit.pos} />
               <Row k="Connection" v={<span style={{ color: unit.online ? "#34d399" : "#f87171" }}>● {unit.connection}</span>} />
-              <Row k="VISA" v={<span className="text-[10px]">{unit.visa}</span>} />
+              <Row k="IP Address" v={<span className="text-[10.5px]">{unit.ipAddress || "—"}</span>} />
+              <Row k="MAC Address" v={<span className="text-[10px]">{unit.macAddress || "—"}</span>} />
               <Row k="Last comm" v={unit.lastComm} />
               <Row k="Firmware" v={unit.firmware} />
               <Row k="Mode" v={<span className="text-amber">{unit.mode}</span>} />
@@ -163,10 +164,10 @@ export function ControlScreen({ unitName }: { unitName: string }) {
 
         <div className="flex flex-col gap-3.5">
           <div className="grid grid-cols-6 gap-2.5">
-            <MiniStat label="OUTPUT" value={co ? "ON" : "OFF"} color={co ? "#2dd4ee" : "#5c6678"} />
-            <MiniStat label="VOLTAGE" value={unit.voltage.toFixed(1)} suffix=" V" />
-            <MiniStat label="CURRENT" value={unit.current.toFixed(1)} suffix=" A" />
-            <MiniStat label="POWER" value={unit.power.toFixed(1)} suffix=" W" color="#2dd4ee" />
+            <MiniStat label="OUTPUT" value={unit.online ? (co ? "ON" : "OFF") : "—"} color={co ? "#2dd4ee" : "#5c6678"} />
+            <MiniStat label="VOLTAGE" value={unit.voltage != null ? unit.voltage.toFixed(1) : "—"} suffix={unit.voltage != null ? " V" : undefined} />
+            <MiniStat label="CURRENT" value={unit.current != null ? unit.current.toFixed(1) : "—"} suffix={unit.current != null ? " A" : undefined} />
+            <MiniStat label="POWER" value={unit.power != null ? unit.power.toFixed(1) : "—"} suffix={unit.power != null ? " W" : undefined} color="#2dd4ee" />
             <MiniStat label="DEVICE" value={unit.deviceState} small color={co ? "#34d399" : "#8a95a8"} />
             <MiniStat label="ALARM" value={unit.alarm === "warning" ? "Warning" : "Normal"} small color={unit.alarm === "warning" ? "#fbbf24" : "#34d399"} />
           </div>

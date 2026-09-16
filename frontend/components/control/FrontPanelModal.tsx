@@ -113,8 +113,8 @@ export function FrontPanelModal({ unitName, onClose, onChanged }: { unitName: st
     } else if (dir === "sel") setMode("meter");
   };
 
-  const fpV = outputOn ? unit.voltage : 0;
-  const fpI = outputOn ? unit.current : 0;
+  const fpV = outputOn ? (unit.voltage ?? 0) : 0;
+  const fpI = outputOn ? (unit.current ?? 0) : 0;
   const fpP = fpV * fpI;
 
   let lcdRows: { text: string; big?: boolean; color?: string }[];

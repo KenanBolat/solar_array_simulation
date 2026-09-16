@@ -42,15 +42,15 @@ function UnitCard({ u }: { u: Unit }) {
       <div className="flex gap-2.5 font-mono">
         <div className="flex-1">
           <div className="text-[9px] text-faint">V</div>
-          <div className="text-[12px] font-semibold">{u.online ? u.voltage.toFixed(1) : "—"}</div>
+          <div className="text-[12px] font-semibold">{u.voltage != null ? u.voltage.toFixed(1) : "—"}</div>
         </div>
         <div className="flex-1">
           <div className="text-[9px] text-faint">A</div>
-          <div className="text-[12px] font-semibold">{u.online ? u.current.toFixed(1) : "—"}</div>
+          <div className="text-[12px] font-semibold">{u.current != null ? u.current.toFixed(1) : "—"}</div>
         </div>
         <div className="flex-1">
           <div className="text-[9px] text-faint">W</div>
-          <div className="text-[12px] font-semibold">{u.online ? u.power.toFixed(1) : "—"}</div>
+          <div className="text-[12px] font-semibold">{u.power != null ? u.power.toFixed(1) : "—"}</div>
         </div>
       </div>
     </Link>

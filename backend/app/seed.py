@@ -20,13 +20,15 @@ def seed_if_empty(db):
     db.add(orm.Unit(
         name=ACTIVE_UNIT, rack_id="A", slot=1, enabled=True, online=True, output=True,
         alarm="normal", voltage_setpoint=28.0, current_limit=5.0,
-        visa="TCPIP0::192.168.10.21::inst0::INSTR", poll_ms=500,
+        ip_address="10.1.20.126", mac_address="80-09-02-05-6A-48",
+        visa="TCPIP0::10.1.20.126::inst0::INSTR", poll_ms=500,
         firmware="E4360A · v3.1.2", featured=True,
     ))
     db.add(orm.Unit(
         name=STANDBY_UNIT, rack_id="A", slot=2, enabled=True, online=True, output=False,
         alarm="normal", voltage_setpoint=28.0, current_limit=5.0,
-        visa="TCPIP0::192.168.10.22::inst0::INSTR", poll_ms=500,
+        ip_address="10.1.20.215", mac_address="80-09-02-08-16-C4",
+        visa="TCPIP0::10.1.20.215::inst0::INSTR", poll_ms=500,
         firmware="E4360A · v3.1.2", featured=False,
     ))
 
@@ -41,9 +43,9 @@ def seed_if_empty(db):
         wobble = math.sin(i * 0.12 + h) * 1.4 + math.sin(i * 0.35) * 0.6
         v = round(28.0 + wobble * 0.05, 3)
         cur = round(4.2 + wobble * 0.08, 3)
-        db.add(orm.Measurement(unit_name=ACTIVE_UNIT, ts=ts, voltage=v, current=cur,
+        db.add(orm.Measurement(unit_name=ACTIVE_UNIT, ts=ts, reachable=True, voltage=v, current=cur,
                                 power=round(v * cur, 3), quality="ok"))
-        db.add(orm.Measurement(unit_name=STANDBY_UNIT, ts=ts, voltage=0.0, current=0.0,
+        db.add(orm.Measurement(unit_name=STANDBY_UNIT, ts=ts, reachable=True, voltage=0.0, current=0.0,
                                 power=0.0, quality="ok"))
 
     seed_alarms = [

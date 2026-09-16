@@ -59,13 +59,17 @@ def unit_to_detail_dict(u: orm.Unit):
     base = unit_to_dict(u)
     base.update({
         "connection": "CONNECTED" if (u.enabled and u.online) else "OFFLINE",
-        "visa": u.visa,
+        "ipAddress": u.ip_address, "macAddress": u.mac_address, "visa": u.visa,
         "lastComm": now_hhmmss() if (u.enabled and u.online) else "—",
         "firmware": u.firmware,
         "mode": "SIMULATION",
         "deviceState": "Stable" if u.output else "Output Disabled",
     })
     return base
+
+
+def derive_visa(ip_address: str) -> str:
+    return f"TCPIP0::{ip_address}::inst0::INSTR" if ip_address else ""
 
 
 def get_unit(db: Session, name: str):
@@ -92,7 +96,8 @@ def summary(db: Session):
     units = list_units(db)
     online = sum(1 for u in units if u.enabled and u.online)
     active_out = sum(1 for u in units if u.enabled and u.online and u.output)
-    total_p = sum(unit_live_values(u)[2] for u in units if u.enabled and u.online and u.output)
+    live_powers = [unit_live_values(u)[2] for u in units if u.enabled and u.online and u.output]
+    total_p = sum(p for p in live_powers if p is not None)
     running = db.query(orm.ScenarioRun).filter(orm.ScenarioRun.status == "Running").count()
     active_alarms = db.query(orm.AlarmRow).filter(orm.AlarmRow.active.is_(True), orm.AlarmRow.ackd.is_(False)).count()
     crit_alarms = db.query(orm.AlarmRow).filter(orm.AlarmRow.active.is_(True), orm.AlarmRow.ackd.is_(False), orm.AlarmRow.sev == "critical").count()
@@ -103,7 +108,8 @@ def summary(db: Session):
     }
 
 
-def create_unit(db: Session, name: str, rack_id: str, visa: str = "", poll_ms: int = 500, slot: int | None = None):
+def create_unit(db: Session, name: str, rack_id: str, ip_address: str = "", mac_address: str = "",
+                 poll_ms: int = 500, slot: int | None = None):
     rack = db.get(orm.Rack, rack_id)
     if not rack:
         raise ValueError(f"Unknown rack {rack_id}")
@@ -114,13 +120,27 @@ def create_unit(db: Session, name: str, rack_id: str, visa: str = "", poll_ms: i
             raise ValueError(f"Rack {rack_id} is at capacity ({rack.cap} slots)")
     elif slot in taken:
         raise ValueError(f"Slot {slot} in rack {rack_id} is already occupied")
+    ip_address = ip_address or f"192.168.10.{20 + slot}"
     unit = orm.Unit(
         name=name, rack_id=rack_id, slot=slot, enabled=True, online=True, output=False,
         alarm="normal", voltage_setpoint=28.0, current_limit=5.0,
-        visa=visa or f"TCPIP0::192.168.10.{20 + slot}::inst0::INSTR", poll_ms=poll_ms,
+        ip_address=ip_address, mac_address=mac_address, visa=derive_visa(ip_address), poll_ms=poll_ms,
         firmware="E4360A · v3.1.2", featured=False,
     )
     db.add(unit)
+    db.commit()
+    return unit
+
+
+def update_unit_network(db: Session, name: str, ip_address: str | None, mac_address: str | None):
+    unit = db.get(orm.Unit, name)
+    if not unit:
+        return None
+    if ip_address is not None:
+        unit.ip_address = ip_address
+        unit.visa = derive_visa(ip_address)
+    if mac_address is not None:
+        unit.mac_address = mac_address
     db.commit()
     return unit
 
@@ -142,6 +162,21 @@ def set_unit_enabled(db: Session, name: str, enabled: bool):
     unit.enabled = enabled
     unit.online = enabled
     if not enabled:
+        unit.output = False
+    db.commit()
+    return unit
+
+
+def set_unit_online(db: Session, name: str, online: bool):
+    """Comms simulation only — independent of `enabled`. This is the hook a
+    real driver's connection-health check would eventually drive; for now
+    it's exposed so comms loss (and the resulting null readings) can be
+    demonstrated without waiting on real hardware."""
+    unit = db.get(orm.Unit, name)
+    if not unit:
+        return None
+    unit.online = online
+    if not online:
         unit.output = False
     db.commit()
     return unit
@@ -207,8 +242,10 @@ def history_view(db: Session, flt: str, limit: int = 200):
 
 
 # ---------- measurements ----------
-def record_measurement(db: Session, unit_name: str, v: float, i: float, p: float, quality: str = "ok"):
-    db.add(orm.Measurement(unit_name=unit_name, ts=datetime.now(timezone.utc), voltage=v, current=i, power=p, quality=quality))
+def record_measurement(db: Session, unit_name: str, v: float | None, i: float | None, p: float | None, reachable: bool):
+    quality = "ok" if reachable else "no_reading"
+    db.add(orm.Measurement(unit_name=unit_name, ts=datetime.now(timezone.utc), reachable=reachable,
+                            voltage=v, current=i, power=p, quality=quality))
     db.commit()
 
 
@@ -241,8 +278,10 @@ def measurements(db: Session, unit_names: list[str], rng: str):
         })
         for r in reversed(rows[-3:]):
             rows_out.append({
-                "unit": name, "time": r.ts.strftime("%H:%M:%S"), "v": round(r.voltage, 3),
-                "i": round(r.current, 3), "p": round(r.power, 2),
+                "unit": name, "time": r.ts.strftime("%H:%M:%S"),
+                "v": round(r.voltage, 3) if r.voltage is not None else None,
+                "i": round(r.current, 3) if r.current is not None else None,
+                "p": round(r.power, 2) if r.power is not None else None,
                 "out": "ON" if (u and u.output) else "OFF", "q": r.quality,
             })
     n = max((len(s["v"]) for s in series), default=0)
@@ -389,7 +428,8 @@ def config_units(db: Session):
     for u in list_units(db):
         out.append({
             "name": u.name, "rack": u.rack.name, "slot": f"S{u.slot}",
-            "visa": u.visa, "poll": f"{u.poll_ms} ms", "enabled": u.enabled,
+            "ipAddress": u.ip_address, "macAddress": u.mac_address, "visa": u.visa,
+            "poll": f"{u.poll_ms} ms", "enabled": u.enabled, "online": u.online,
         })
     return out
 
