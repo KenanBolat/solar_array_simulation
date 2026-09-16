@@ -47,10 +47,10 @@ cd backend
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 .venv/bin/python -m uvicorn app.main:app --port 8000
 
-# frontend (http://localhost:3000) — proxies /api/* to the backend above
+# frontend (http://localhost:3301) — proxies /api/* to the backend above
 cd frontend
 npm install
 npm run dev
 ```
 
-Then open http://localhost:3000.
+Then open http://localhost:3301.
