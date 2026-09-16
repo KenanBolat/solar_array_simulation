@@ -188,15 +188,15 @@ export function ControlScreen({ unitName }: { unitName: string }) {
             <div className="flex flex-col gap-2.5">
               <div>
                 <div className="mb-1 font-mono text-[10px] text-muted">VOLTAGE · V</div>
-                <Sparkline values={telemetry?.v ?? [0]} color="#2dd4ee" />
+                <Sparkline values={telemetry?.v ?? []} color="#2dd4ee" unit=" V" decimals={2} />
               </div>
               <div>
                 <div className="mb-1 font-mono text-[10px] text-muted">CURRENT · A</div>
-                <Sparkline values={telemetry?.i ?? [0]} color="#34d399" />
+                <Sparkline values={telemetry?.i ?? []} color="#34d399" unit=" A" decimals={2} />
               </div>
               <div>
                 <div className="mb-1 font-mono text-[10px] text-muted">POWER · W</div>
-                <Sparkline values={telemetry?.p ?? [0]} color="#fbbf24" />
+                <Sparkline values={telemetry?.p ?? []} color="#fbbf24" unit=" W" decimals={1} />
               </div>
             </div>
           </Panel>
