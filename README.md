@@ -45,16 +45,30 @@ The design above has been implemented as a real full-stack application:
   running the backend can't route to the instrument's IP, the unit correctly
   shows unreachable and every field goes null, exactly like a real outage would.
   Default seed topology is a single RACK-A with two units: **SAS-01** (active,
-  output on, `10.1.20.126` / `80-09-02-05-6A-48`) and **SAS-02** (standby, output
-  off, `10.1.20.215` / `80-09-02-08-16-C4`). Units are addressed by **IP + MAC**
-  (+ a configurable SCPI port, default `5025` — unconfirmed for this instrument);
-  the VISA resource string (`TCPIP0::<ip>::inst0::INSTR`) is derived automatically
-  and isn't user-facing. Units can be added, deleted, enabled/disabled, and had
-  their network info edited from Configuration → Simulator Units. No real SCPI
-  driver — measurement retrieval is a simulation only, by design (see the handoff
-  conversation in `chats/`); the attached E4360 manual turned out to be the
-  Service Guide, not the Programming Guide, so it doesn't cover LAN/SCPI
-  addressing — that's needed before real measurement commands can be added.
+  output on) and **SAS-02** (standby, output off). Units are addressed by
+  **IP + MAC** (+ a configurable SCPI port, default `5025` — unconfirmed for
+  this instrument); the VISA resource string (`TCPIP0::<ip>::inst0::INSTR`) is
+  derived automatically and isn't user-facing. Units can be added, deleted,
+  enabled/disabled, and had their network info edited from Configuration →
+  Simulator Units. No real SCPI driver — measurement retrieval is a simulation
+  only, by design (see the handoff conversation in `chats/`); the attached
+  E4360 manual turned out to be the Service Guide, not the Programming Guide,
+  so it doesn't cover LAN/SCPI addressing — that's needed before real
+  measurement commands can be added.
+
+  **About the seeded IPs.** SAS-01/SAS-02 ship pointed at `127.0.0.1:5025` /
+  `127.0.0.1:5026` — a tiny local TCP listener (`app/stub_instrument.py`,
+  started by the backend on boot) that exists solely so the *real*
+  reachability probe has something genuine to connect to out of the box. It
+  doesn't speak SCPI or anything else; it only accepts the TCP handshake.
+  This isn't a fake reachability signal — the socket connection really
+  happens — it's just a stand-in target instead of the physical instruments.
+  Their real MACs (`80-09-02-05-6A-48` / `80-09-02-08-16-C4`) are kept as
+  labels. Once you're running the backend on a host with LAN access to the
+  actual E4360A units, repoint each one's IP (and port, if different) at the
+  real device from Configuration → Simulator Units — from that point on,
+  reachability and the online/offline state reflect the real instrument, not
+  the stub.
 - `frontend/` — Next.js (App Router) + TypeScript + Tailwind app implementing all
   nine screens from the wireframe: Intro, Rack Overview, Simulator Control (with
   Virtual Front Panel and guided Command Terminal modals), Measurements, Scenario

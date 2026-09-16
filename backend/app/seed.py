@@ -17,18 +17,24 @@ def seed_if_empty(db):
     rack = orm.Rack(id="A", name="RACK-A", loc="Lab 2 · Bay 1", cap=4)
     db.add(rack)
 
+    # IP/port default to the local stub listener (see stub_instrument.py) so the
+    # real TCP reachability probe has something genuine to connect to out of
+    # the box. These are demo stand-ins, not the physical units' addresses —
+    # once you're running the app on a host with LAN access to the real E4360A
+    # instruments, repoint each unit's IP/MAC at them from Configuration →
+    # Simulator Units (their real MACs are kept below for reference/labeling).
     db.add(orm.Unit(
         name=ACTIVE_UNIT, rack_id="A", slot=1, enabled=True, online=True, output=True,
         alarm="normal", voltage_setpoint=28.0, current_limit=5.0,
-        ip_address="10.1.20.126", mac_address="80-09-02-05-6A-48",
-        visa="TCPIP0::10.1.20.126::inst0::INSTR", poll_ms=500,
+        ip_address="127.0.0.1", mac_address="80-09-02-05-6A-48", scpi_port=5025,
+        visa="TCPIP0::127.0.0.1::inst0::INSTR", poll_ms=500,
         firmware="E4360A · v3.1.2", featured=True,
     ))
     db.add(orm.Unit(
         name=STANDBY_UNIT, rack_id="A", slot=2, enabled=True, online=True, output=False,
         alarm="normal", voltage_setpoint=28.0, current_limit=5.0,
-        ip_address="10.1.20.215", mac_address="80-09-02-08-16-C4",
-        visa="TCPIP0::10.1.20.215::inst0::INSTR", poll_ms=500,
+        ip_address="127.0.0.1", mac_address="80-09-02-08-16-C4", scpi_port=5026,
+        visa="TCPIP0::127.0.0.1::inst0::INSTR", poll_ms=500,
         firmware="E4360A · v3.1.2", featured=False,
     ))
 

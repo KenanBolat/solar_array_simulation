@@ -10,7 +10,13 @@ async function j<T>(path: string, init?: RequestInit): Promise<T> {
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(`${res.status} ${res.statusText}: ${text}`);
+    let detail: string | undefined;
+    try {
+      detail = JSON.parse(text)?.detail;
+    } catch {
+      // not JSON — fall through to the raw message below
+    }
+    throw new Error(detail || `${res.status} ${res.statusText}: ${text}`);
   }
   return res.json();
 }

@@ -44,6 +44,22 @@ EDGE_DEFS = [
 ]
 
 NODE_PROPS_OVERRIDE = {
+    "profile": {
+        "name": "Apply Solar Profile",
+        "target": f"{FEATURED_UNIT} (single unit)",
+        "params": [
+            ["Profile", "BOL_GEO_28V"],
+            ["Meaning", "Beginning-of-Life, Geostationary orbit, 28 V bus"],
+            ["What it configures", "The I-V curve the array should behave like before Set Voltage/Enable Output run"],
+        ],
+        "delay": "0 ms", "timeout": "2 000 ms", "retry": "0 retries",
+        "fail": "Abort scenario",
+        "comments": ("Selects which simulated solar-array I-V curve the unit should present for this run — e.g. "
+                      "a fresh panel at geostationary orbit vs. an aged/degraded or low-earth-orbit curve. It's applied "
+                      "before the voltage/output steps so the rest of the sequence tests against a known array condition. "
+                      "In this build it's logged as a run step (audit trail); it does not yet change the simulated "
+                      "voltage/current math itself — see README for the real-vs-simulated telemetry boundary."),
+    },
     "thresh": {
         "name": "Threshold Check",
         "target": f"{FEATURED_UNIT} (single unit)",

@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api, SCENARIO_ID } from "@/lib/api";
 import { usePoll } from "@/lib/useApi";
 import { usePageHeader } from "@/lib/header-context";
@@ -37,12 +37,17 @@ export default function ScenarioBuilderPage() {
   const { notify } = useUi();
   const { data: graph } = usePoll(() => api.scenario(SCENARIO_ID), 30000);
   const { data: units } = usePoll(() => api.units(), 15000);
-  const targetUnit = units?.find((u) => u.featured)?.name ?? units?.[0]?.name ?? "the configured target unit";
+  const { data: runsList, reload: reloadRuns } = usePoll(() => api.runs("All"), 2500);
+  const targetUnitObj = units?.find((u) => u.featured) ?? units?.[0];
+  const targetUnit = targetUnitObj?.name ?? "the configured target unit";
+  const targetActive = !!targetUnitObj && targetUnitObj.enabled && targetUnitObj.online;
   const [selectedNode, setSelectedNode] = useState("thresh");
   const [nodeProps, setNodeProps] = useState<NodeProps | null>(null);
   const [zoom, setZoom] = useState(1);
   const [showMinimap] = useState(true);
   const [showRunModal, setShowRunModal] = useState(false);
+  const [positions, setPositions] = useState<Record<string, { x: number; y: number }>>({});
+  const dragRef = useRef<{ id: string; dx: number; dy: number; moved: boolean } | null>(null);
 
   useEffect(() => {
     api.nodeProps(SCENARIO_ID, selectedNode).then(setNodeProps).catch(() => setNodeProps(null));
@@ -50,13 +55,59 @@ export default function ScenarioBuilderPage() {
 
   if (!graph) return <div className="p-5 text-muted">Loading scenario…</div>;
 
+  const activeRun = runsList?.find((r) => r.scenario === graph.scenario.name && r.status === "Running");
+
+  const resolved = (n: ScenarioNode): ScenarioNode => {
+    const p = positions[n.id];
+    return p ? { ...n, x: p.x, y: p.y } : n;
+  };
   const nById: Record<string, ScenarioNode> = {};
-  graph.nodes.forEach((n) => (nById[n.id] = n));
+  graph.nodes.forEach((n) => (nById[n.id] = resolved(n)));
 
   const runScenario = async () => {
     setShowRunModal(false);
-    const run = await api.runScenario(SCENARIO_ID);
-    notify(`Scenario dispatched — ${run.id} started`);
+    try {
+      const run = await api.runScenario(SCENARIO_ID);
+      notify(`Scenario dispatched — ${run.id} started`);
+      reloadRuns();
+    } catch (e) {
+      notify(e instanceof Error ? e.message : "Failed to start scenario");
+    }
+  };
+
+  const pauseScenario = async () => {
+    if (!activeRun) { notify("No run is active"); return; }
+    const res = await api.pauseRun(activeRun.id);
+    notify(res.message);
+  };
+
+  const abortScenario = async () => {
+    if (!activeRun) { notify("No run is active"); return; }
+    const res = await api.abortRun(activeRun.id);
+    notify(res.message);
+    reloadRuns();
+  };
+
+  const nodeMouseDown = (e: React.MouseEvent, n: ScenarioNode) => {
+    e.preventDefault();
+    const start = resolved(n);
+    dragRef.current = { id: n.id, dx: e.clientX / zoom - start.x, dy: e.clientY / zoom - start.y, moved: false };
+    const onMove = (ev: MouseEvent) => {
+      const d = dragRef.current;
+      if (!d) return;
+      d.moved = true;
+      const x = Math.max(0, Math.round(ev.clientX / zoom - d.dx));
+      const y = Math.max(0, Math.round(ev.clientY / zoom - d.dy));
+      setPositions((prev) => ({ ...prev, [d.id]: { x, y } }));
+    };
+    const onUp = () => {
+      if (dragRef.current && !dragRef.current.moved) setSelectedNode(dragRef.current.id);
+      dragRef.current = null;
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
   };
 
   return (
@@ -65,20 +116,43 @@ export default function ScenarioBuilderPage() {
         <span className="text-[13px] font-bold">{graph.scenario.name}</span>
         <span className="font-mono text-[10px] text-faint">{graph.scenario.version}</span>
         <span className="rounded border border-amber/35 px-1.5 py-0.5 text-[10px] font-semibold text-amber">{graph.scenario.state}</span>
+        {activeRun ? (
+          <span className="flex items-center gap-1.5 rounded border border-cyan/35 px-1.5 py-0.5 text-[10px] font-semibold text-cyan">
+            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-cyan" />
+            Running · {activeRun.id} · {activeRun.prog}%
+          </span>
+        ) : (
+          <span className="rounded border border-line2 px-1.5 py-0.5 text-[10px] font-semibold text-faint">Idle</span>
+        )}
         <div className="flex-1" />
         <ToolBtn onClick={() => notify("Scenario saved")}>Save</ToolBtn>
         <ToolBtn onClick={() => notify("Validation passed · 0 invalid nodes")}>Validate</ToolBtn>
         <ToolBtn onClick={() => notify("Dry run complete · no commands dispatched")}>Dry Run</ToolBtn>
-        <button onClick={() => setShowRunModal(true)} className="rounded-md bg-green px-3.5 py-1.5 text-[11px] font-bold text-[#04130c]">▶ Run Scenario</button>
-        <ToolBtn onClick={() => notify("Pause requested")}>Pause</ToolBtn>
-        <button onClick={() => notify("Abort requested")} className="rounded-md border border-red/40 bg-red/10 px-3 py-1.5 text-[11px] font-semibold text-red">Abort</button>
+        <button
+          onClick={() => setShowRunModal(true)}
+          disabled={!targetActive || !!activeRun}
+          title={!targetActive ? `${targetUnit} is not active (must be enabled + reachable)` : activeRun ? `Already running as ${activeRun.id}` : ""}
+          className="rounded-md bg-green px-3.5 py-1.5 text-[11px] font-bold text-[#04130c] disabled:cursor-not-allowed disabled:bg-line2 disabled:text-faint"
+        >
+          ▶ Run Scenario
+        </button>
+        <ToolBtn onClick={pauseScenario} disabled={!activeRun}>Pause</ToolBtn>
+        <button onClick={abortScenario} disabled={!activeRun} className="rounded-md border border-red/40 bg-red/10 px-3 py-1.5 text-[11px] font-semibold text-red disabled:cursor-not-allowed disabled:opacity-40">Abort</button>
       </div>
+      {!targetActive && (
+        <div className="flex-none border-b border-amber/25 bg-amber/[0.06] px-4 py-1.5 text-[11px] text-amber">
+          ⚠ Target unit {targetUnit} is not active (enabled + reachable) — Run Scenario is disabled until it comes back online.
+        </div>
+      )}
 
       <div className="flex min-h-0 flex-1">
         <div className="w-[188px] flex-none overflow-auto border-r border-line bg-[#0e1117] p-2.5">
           <div className="mb-2 ml-1 text-[9.5px] uppercase tracking-wider text-faint">Node Palette</div>
+          <div className="mb-2 ml-1 text-[10px] leading-relaxed text-faint">
+            Reference only for this demo — this scenario&apos;s graph is fixed. Drag nodes on the canvas to rearrange the existing steps.
+          </div>
           {graph.palette.map((p) => (
-            <div key={p} className="mb-1 flex items-center gap-2 rounded-md px-2.5 py-2 text-[12px] text-[#cfd6e2] hover:bg-panel2">
+            <div key={p} className="mb-1 flex cursor-not-allowed items-center gap-2 rounded-md px-2.5 py-2 text-[12px] text-[#cfd6e2] opacity-60">
               <span className="h-1.5 w-1.5 rounded-full bg-line2" />{p}
             </div>
           ))}
@@ -103,14 +177,15 @@ export default function ScenarioBuilderPage() {
                     markerEnd={`url(#${e.fail ? "ah-red" : "ah-cyan"})`} />
                 ))}
               </svg>
-              {graph.nodes.map((n) => {
+              {graph.nodes.map((raw) => {
+                const n = nById[raw.id];
                 const sel = n.id === selectedNode;
                 const color = KIND_COLOR[n.kind];
                 const danger = n.kind === "danger";
                 const warn = n.kind === "logic";
                 return (
-                  <div key={n.id} onClick={() => setSelectedNode(n.id)}
-                    className="absolute cursor-pointer rounded-md px-2.5 pb-2.5 pt-2"
+                  <div key={n.id} onMouseDown={(e) => nodeMouseDown(e, n)}
+                    className="absolute cursor-grab select-none rounded-md px-2.5 pb-2.5 pt-2 active:cursor-grabbing"
                     style={{
                       left: n.x, top: n.y, width: NODE_W,
                       background: danger ? "#1f1216" : "#1a1f29",
@@ -140,9 +215,10 @@ export default function ScenarioBuilderPage() {
                 {graph.edges.map((e, idx) => (
                   <path key={idx} d={connPath(nById[e.from], nById[e.to], e.kind)} fill="none" stroke={e.fail ? "#f87171" : "#2dd4ee"} strokeWidth={4} opacity={0.5} />
                 ))}
-                {graph.nodes.map((n) => (
-                  <rect key={n.id} x={n.x} y={n.y} width={170} height={58} rx={8} fill={KIND_COLOR[n.kind]} opacity={0.55} />
-                ))}
+                {graph.nodes.map((raw) => {
+                  const n = nById[raw.id];
+                  return <rect key={n.id} x={n.x} y={n.y} width={170} height={58} rx={8} fill={KIND_COLOR[n.kind]} opacity={0.55} />;
+                })}
               </svg>
             </div>
           )}
@@ -208,8 +284,12 @@ export default function ScenarioBuilderPage() {
   );
 }
 
-function ToolBtn({ children, onClick }: { children: React.ReactNode; onClick: () => void }) {
-  return <button onClick={onClick} className="rounded-md border border-line2 bg-panel2 px-2.5 py-1.5 text-[11px] font-semibold text-ink">{children}</button>;
+function ToolBtn({ children, onClick, disabled }: { children: React.ReactNode; onClick: () => void; disabled?: boolean }) {
+  return (
+    <button onClick={onClick} disabled={disabled} className="rounded-md border border-line2 bg-panel2 px-2.5 py-1.5 text-[11px] font-semibold text-ink disabled:cursor-not-allowed disabled:opacity-40">
+      {children}
+    </button>
+  );
 }
 
 function ReadField({ label, value }: { label: string; value: string }) {
