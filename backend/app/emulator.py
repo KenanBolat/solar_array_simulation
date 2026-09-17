@@ -76,11 +76,14 @@ class Channel:
 
 
 class E4360Emulator:
-    def __init__(self, port: int, channels: list[Channel], serial: str = "MY00000001", firmware: str = "A.02.05"):
+    def __init__(self, port: int, channels: list[Channel], serial: str = "MY00000001", firmware: str = "A.02.05",
+                 max_clients: int = 2):
         self.port = port
         self.channels = channels
         self.serial = serial
         self.firmware = firmware
+        self.max_clients = max_clients  # real instruments accept only a few simultaneous connections
+        self.clients = 0
         self.errors: deque[tuple[int, str]] = deque()
         self.rlstate = "LOC"
         for ch in channels:
@@ -398,6 +401,10 @@ class E4360Emulator:
 
     # ---------- server ----------
     async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+        if self.clients >= self.max_clients:
+            writer.close()  # like the real thing: no banner, no error — the connection is simply dropped
+            return
+        self.clients += 1
         try:
             while True:
                 line = await reader.readline()
@@ -413,6 +420,7 @@ class E4360Emulator:
         except (ConnectionError, asyncio.IncompleteReadError):
             pass
         finally:
+            self.clients -= 1
             writer.close()
 
     async def serve(self, host: str = "127.0.0.1") -> asyncio.AbstractServer | None:

@@ -37,6 +37,7 @@ class Unit(Base):
 
     # mirrored from the instrument
     online = Column(Boolean, nullable=False, default=False)    # last poll got a valid SCPI reply
+    last_error = Column(String, nullable=False, default="")    # why the last poll failed, verbatim; "" when online
     output = Column(Boolean, nullable=False, default=False)    # OUTP?
     op_mode = Column(String, nullable=False, default="")       # CURR:MODE? -> FIX | SAS | TABL
     voltage_setpoint = Column(Float, nullable=False, default=0.0)  # VOLT? (FIXed mode)

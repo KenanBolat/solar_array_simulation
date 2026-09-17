@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 
 from . import data, orm
 from .db import session_scope
-from .scpi import QUESTIONABLE_BITS, CommandResult, Reading, visa_address
+from .scpi import QUESTIONABLE_BITS, CommandResult, Reading, close_session, visa_address
 
 MODE_LABEL = {"FIX": "FIXED", "SAS": "SAS CURVE", "TABL": "TABLE"}
 PROTECTION_MASK = sum(bit for bit, *_ in QUESTIONABLE_BITS)
@@ -56,6 +56,7 @@ def unit_to_dict(u: orm.Unit):
         "voltageSetpoint": u.voltage_setpoint, "currentLimit": u.current_limit,
         "opMode": u.op_mode or None, "questionable": u.questionable,
         "channel": u.channel, "transport": u.transport,
+        "lastError": (u.last_error or None) if u.enabled else None,
         "featured": u.featured, "enabled": u.enabled,
     }
 
@@ -86,6 +87,7 @@ def apply_reading(db: Session, u: orm.Unit, result: CommandResult, reading: Read
     """Mirror one poll result into the unit row + one measurement row."""
     if result.ok and reading is not None:
         u.online = True
+        u.last_error = ""
         u.last_voltage = round(reading.voltage, 4)
         u.last_current = round(reading.current, 4)
         u.last_power = round(reading.voltage * reading.current, 3)
@@ -99,6 +101,9 @@ def apply_reading(db: Session, u: orm.Unit, result: CommandResult, reading: Read
         record_measurement(db, u.name, u.last_voltage, u.last_current, u.last_power, reachable=True)
     else:
         u.online = False
+        u.last_error = (f"{result.status}: {result.error_msg}" if result.error_msg else result.status)
+        if result.status == "ERR":
+            u.last_error = f'instrument error {result.error_code},"{result.error_msg}" on {result.sent}'
         u.last_voltage = u.last_current = u.last_power = None
         record_measurement(db, u.name, None, None, None, reachable=False)
 
@@ -199,6 +204,7 @@ def update_unit_network(db: Session, name: str, ip_address: str | None, mac_addr
     unit = db.get(orm.Unit, name)
     if not unit:
         return None
+    old_address = unit.visa
     if ip_address is not None:
         unit.ip_address = ip_address
     if mac_address is not None:
@@ -209,8 +215,10 @@ def update_unit_network(db: Session, name: str, ip_address: str | None, mac_addr
         unit.transport = transport
     if channel is not None:
         unit.channel = channel
+    close_session(old_address)
     unit.visa = derive_visa(unit.ip_address, unit.scpi_port, unit.transport)
     unit.online = False  # re-established by the next poll against the new address
+    unit.last_error = "re-addressed — awaiting first poll"
     db.commit()
     return unit
 
@@ -219,6 +227,7 @@ def delete_unit(db: Session, name: str):
     unit = db.get(orm.Unit, name)
     if not unit:
         return False
+    close_session(unit.visa)
     db.query(orm.Measurement).filter(orm.Measurement.unit_name == name).delete()
     db.delete(unit)
     db.commit()
@@ -485,6 +494,7 @@ def config_units(db: Session):
             "name": u.name, "rack": u.rack.name, "slot": f"S{u.slot}",
             "ipAddress": u.ip_address, "macAddress": u.mac_address, "scpiPort": u.scpi_port, "visa": u.visa,
             "transport": u.transport, "channel": u.channel, "opMode": u.op_mode or None,
+            "lastError": u.last_error or None,
             "poll": f"{u.poll_ms} ms", "enabled": u.enabled, "online": u.online,
         })
     return out

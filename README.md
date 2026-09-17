@@ -65,6 +65,18 @@ which is a different thing, and the schema keeps them distinct. Protection bits 
 `STAT:QUES:COND?` (OV, OC, OT, PF, …) raise alarms when they latch and retire them
 when they clear; `OUTP:PROT:CLE (@n)` is available from the front-panel menu.
 
+**Connections.** The driver holds **one persistent connection per instrument**,
+shared by the poller and every command and reconnected automatically if it drops.
+This matters: E4360 mainframes (like most Keysight LAN instruments) accept only a
+few simultaneous connections — a raw-socket port often just one — so anything else
+holding a connection to the same instrument (a telnet session on 5024/5025, another
+VISA client, an earlier build of this app opening one connection per poll) can make
+the unit read *unreachable* here while the other client still works. When a unit is
+unreachable the UI shows the exact failure reason (Configuration → Simulator Units,
+Device Identity, and the front panel's `NO COMMS` screen), e.g.
+`Connection refused — instrument up but not accepting another connection?`. Close
+the other session and the app recovers within a second or two on its own.
+
 **Testing the backend directly** (it's plain JSON over HTTP; Swagger UI at
 `http://localhost:8000/docs`):
 
@@ -131,12 +143,12 @@ npm run dev
 
 Then open http://localhost:3301.
 
-If you already have a `backend/data.db` from an earlier version, delete it — the schema
-changed (channel/transport columns, mirrored instrument state, richer audit rows) and
-there's no migration system yet:
+An existing `backend/data.db` is upgraded in place on startup (missing columns are
+added), so your configured units survive updates. Delete it only if you want a fresh
+seed:
 
 ```bash
-rm backend/data.db   # fresh schema + seed on next start
+rm backend/data.db   # optional: fresh schema + seed on next start
 ```
 
 ### What is still simulated

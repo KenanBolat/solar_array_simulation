@@ -23,6 +23,15 @@ taken from the Keysight "Series E4360 Programmer's Reference Guide"
                  this guide; it is offered here as an opt-in transport for
                  users who have confirmed it on their instrument's LAN
                  configuration page, and for the bundled emulator.
+
+Connections: the driver keeps ONE persistent connection per instrument
+address, shared by the poller and every command (serialised by a per-address
+lock), and reconnects transparently when it drops. Instruments accept only a
+handful of simultaneous connections (a raw-socket port frequently just one),
+so opening a connection per operation exhausts them within seconds — every
+unit then reads "unreachable" while a telnet session opened earlier still
+works. An interactive telnet/socket session on the same port as the app can
+still occupy the instrument's slot; the failure reason is reported verbatim.
 """
 from __future__ import annotations
 
@@ -42,6 +51,7 @@ _rm: pyvisa.ResourceManager | None = None
 _rm_guard = threading.Lock()
 _locks: dict[str, threading.Lock] = {}
 _locks_guard = threading.Lock()
+_sessions: dict[str, pyvisa.resources.MessageBasedResource] = {}
 
 
 def _resource_manager() -> pyvisa.ResourceManager:
@@ -55,6 +65,17 @@ def _resource_manager() -> pyvisa.ResourceManager:
 def _lock_for(address: str) -> threading.Lock:
     with _locks_guard:
         return _locks.setdefault(address, threading.Lock())
+
+
+def close_session(address: str):
+    """Drop the cached connection for an address (e.g. when a unit is re-addressed or deleted)."""
+    with _lock_for(address):
+        inst = _sessions.pop(address, None)
+        if inst is not None:
+            try:
+                inst.close()
+            except Exception:
+                pass
 
 
 def visa_address(ip_address: str, port: int, transport: str) -> str:
@@ -115,6 +136,7 @@ class Instrument:
         self.address = visa_address(ip_address, port, transport)
         self.channel = int(channel or 1)
         self.timeout_ms = timeout_ms
+        self._reused = False
 
     @classmethod
     def for_unit(cls, unit) -> "Instrument":
@@ -125,30 +147,62 @@ class Instrument:
         return f"(@{self.channel})"
 
     # ---------- transport ----------
+    def _open(self):
+        return _resource_manager().open_resource(
+            self.address, open_timeout=self.timeout_ms, timeout=self.timeout_ms,
+            read_termination="\n", write_termination="\n",
+        )
+
     @contextmanager
     def _session(self):
+        """Yield the persistent connection for this address, opening it if needed.
+        Any exception inside the block invalidates the connection so the next
+        call reconnects. Sets self._reused so callers can retry once when a
+        previously-good connection turns out to be stale."""
         if not self.address:
             raise ConnectionError("no IP address configured")
         with _lock_for(self.address):
-            inst = _resource_manager().open_resource(
-                self.address, open_timeout=self.timeout_ms, timeout=self.timeout_ms,
-                read_termination="\n", write_termination="\n",
-            )
+            inst = _sessions.get(self.address)
+            self._reused = inst is not None
+            if inst is None:
+                inst = self._open()
+                _sessions[self.address] = inst
             try:
                 yield inst
-            finally:
+            except Exception:
+                _sessions.pop(self.address, None)
                 try:
                     inst.close()
                 except Exception:
                     pass
+                raise
+
+    def _run(self, sent: str, op):
+        """Run `op(inst)` on the shared connection; if a *reused* connection fails
+        (instrument closed it, link dropped) reconnect and try exactly once more."""
+        t0 = time.perf_counter()
+        for attempt in (0, 1):
+            self._reused = False
+            try:
+                with self._session() as inst:
+                    return op(inst, t0)
+            except Exception as exc:
+                if attempt == 0 and self._reused:
+                    continue
+                return self._failure(sent, exc, t0)
 
     @staticmethod
     def _failure(sent: str, exc: Exception, t0: float) -> CommandResult:
         latency = int((time.perf_counter() - t0) * 1000)
         if isinstance(exc, pyvisa.errors.VisaIOError) and exc.error_code == constants.StatusCode.error_timeout:
             return CommandResult("TIMEOUT", sent, error_msg=f"no reply within {latency} ms", latency_ms=latency)
-        msg = str(exc).strip() or exc.__class__.__name__
-        return CommandResult("UNREACHABLE", sent, error_msg=msg[:160], latency_ms=latency)
+        if isinstance(exc, pyvisa.errors.VisaIOError):
+            msg = exc.description or str(exc)
+        else:
+            msg = str(exc).strip() or exc.__class__.__name__
+        if "refused" in msg.lower():
+            msg += " — instrument up but not accepting another connection? (limited concurrent sessions; close telnet)"
+        return CommandResult("UNREACHABLE", sent, error_msg=msg[:200], latency_ms=latency)
 
     @staticmethod
     def _parse_error(raw: str) -> tuple[int, str]:
@@ -185,39 +239,31 @@ class Instrument:
             return abs(got - float(expect)) <= max(0.005 * abs(float(expect)), 0.01)
         return r.upper().startswith(str(expect).upper()[:3])
 
-    def _exec(self, inst, sent: str, readback: str | None = None, expect=None) -> CommandResult:
-        t0 = time.perf_counter()
-        inst.write(sent)
-        inst.query("*OPC?")
-        code, msg = self._drain_errors(inst)
-        if code != 0:
-            return CommandResult("ERR", sent, error_code=code, error_msg=msg,
-                                 latency_ms=int((time.perf_counter() - t0) * 1000))
-        response = inst.query(readback).strip() if readback else None
-        return CommandResult("OK", sent, response=response, latency_ms=int((time.perf_counter() - t0) * 1000),
-                             readback_ok=self._readback_matches(response, expect))
+    @staticmethod
+    def _ms(t0: float) -> int:
+        return int((time.perf_counter() - t0) * 1000)
 
     def execute(self, sent: str, readback: str | None = None, expect=None) -> CommandResult:
-        t0 = time.perf_counter()
-        try:
-            with self._session() as inst:
-                return self._exec(inst, sent, readback, expect)
-        except Exception as exc:  # VisaIOError, OSError, ConnectionError — all mean "didn't get through"
-            return self._failure(sent, exc, t0)
+        def op(inst, t0):
+            inst.write(sent)
+            inst.query("*OPC?")
+            code, msg = self._drain_errors(inst)
+            if code != 0:
+                return CommandResult("ERR", sent, error_code=code, error_msg=msg, latency_ms=self._ms(t0))
+            response = inst.query(readback).strip() if readback else None
+            return CommandResult("OK", sent, response=response, latency_ms=self._ms(t0),
+                                 readback_ok=self._readback_matches(response, expect))
+        return self._run(sent, op)
 
     def query(self, sent: str) -> CommandResult:
-        t0 = time.perf_counter()
-        try:
-            with self._session() as inst:
-                response = inst.query(sent).strip()
-                code, msg = self._drain_errors(inst)
-                if code != 0:
-                    return CommandResult("ERR", sent, response=response, error_code=code, error_msg=msg,
-                                         latency_ms=int((time.perf_counter() - t0) * 1000))
-                return CommandResult("OK", sent, response=response, latency_ms=int((time.perf_counter() - t0) * 1000),
-                                     readback_ok=True)
-        except Exception as exc:
-            return self._failure(sent, exc, t0)
+        def op(inst, t0):
+            response = inst.query(sent).strip()
+            code, msg = self._drain_errors(inst)
+            if code != 0:
+                return CommandResult("ERR", sent, response=response, error_code=code, error_msg=msg,
+                                     latency_ms=self._ms(t0))
+            return CommandResult("OK", sent, response=response, latency_ms=self._ms(t0), readback_ok=True)
+        return self._run(sent, op)
 
     # ---------- documented operations ----------
     def identify(self) -> CommandResult:
@@ -273,32 +319,31 @@ class Instrument:
         VOLT?/CURR? are meaningful."""
         compound = (f"MEAS:VOLT? {self.ch};:FETC:CURR? {self.ch};:OUTP? {self.ch};"
                     f":CURR:MODE? {self.ch};:STAT:QUES:COND? {self.ch}")
-        t0 = time.perf_counter()
-        try:
-            with self._session() as inst:
-                raw = inst.query(compound).strip()
-                parts = [p.strip() for p in raw.split(";")]
-                if len(parts) != 5:  # instrument didn't honour the compound query — fall back to one at a time
-                    parts = [inst.query(q).strip() for q in (
-                        f"MEAS:VOLT? {self.ch}", f"FETC:CURR? {self.ch}", f"OUTP? {self.ch}",
-                        f"CURR:MODE? {self.ch}", f"STAT:QUES:COND? {self.ch}")]
-                code, msg = self._drain_errors(inst)
-                if code != 0:
-                    return CommandResult("ERR", compound, response=raw, error_code=code, error_msg=msg,
-                                         latency_ms=int((time.perf_counter() - t0) * 1000)), None
-                reading = Reading(
-                    voltage=float(parts[0]), current=float(parts[1]),
-                    output=parts[2] in ("1", "ON"), mode=MODES.get(parts[3].upper(), parts[3].upper()[:4]),
-                    questionable=int(float(parts[4])),
-                )
-                if reading.mode == "FIX":
-                    sp = inst.query(f"VOLT? {self.ch};:CURR? {self.ch}").strip().split(";")
-                    if len(sp) == 2:
-                        reading.volt_set, reading.curr_set = float(sp[0]), float(sp[1])
-                return CommandResult("OK", compound, response=raw, latency_ms=int((time.perf_counter() - t0) * 1000),
-                                     readback_ok=True), reading
-        except Exception as exc:
-            return self._failure(compound, exc, t0), None
+
+        def op(inst, t0):
+            raw = inst.query(compound).strip()
+            parts = [p.strip() for p in raw.split(";")]
+            if len(parts) != 5:  # instrument didn't honour the compound query — fall back to one at a time
+                parts = [inst.query(q).strip() for q in (
+                    f"MEAS:VOLT? {self.ch}", f"FETC:CURR? {self.ch}", f"OUTP? {self.ch}",
+                    f"CURR:MODE? {self.ch}", f"STAT:QUES:COND? {self.ch}")]
+            code, msg = self._drain_errors(inst)
+            if code != 0:
+                return CommandResult("ERR", compound, response=raw, error_code=code, error_msg=msg,
+                                     latency_ms=self._ms(t0)), None
+            reading = Reading(
+                voltage=float(parts[0]), current=float(parts[1]),
+                output=parts[2] in ("1", "ON"), mode=MODES.get(parts[3].upper(), parts[3].upper()[:4]),
+                questionable=int(float(parts[4])),
+            )
+            if reading.mode == "FIX":
+                sp = inst.query(f"VOLT? {self.ch};:CURR? {self.ch}").strip().split(";")
+                if len(sp) == 2:
+                    reading.volt_set, reading.curr_set = float(sp[0]), float(sp[1])
+            return CommandResult("OK", compound, response=raw, latency_ms=self._ms(t0), readback_ok=True), reading
+
+        out = self._run(compound, op)
+        return out if isinstance(out, tuple) else (out, None)
 
 
 # STAT:QUES:COND? bit definitions (guide, "STATus:QUEStionable:CONDition?")

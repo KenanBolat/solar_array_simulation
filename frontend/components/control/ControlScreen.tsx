@@ -133,7 +133,10 @@ export function ControlScreen({ unitName }: { unitName: string }) {
             <div className="flex flex-col gap-2 font-mono text-[11.5px]">
               <Row k="Name" v={unit.name} />
               <Row k="Location" v={unit.pos} />
-              <Row k="Connection" v={<span style={{ color: unit.online ? "#34d399" : "#f87171" }}>● {unit.connection}</span>} />
+              <Row k="Connection" v={<span style={{ color: unit.online ? "#34d399" : "#f87171" }} title={unit.lastError ?? ""}>● {unit.connection}</span>} />
+              {!unit.online && unit.lastError && (
+                <div className="rounded-md border border-red/25 bg-red/[0.06] px-2 py-1.5 text-[10px] leading-snug text-red">{unit.lastError}</div>
+              )}
               <Row k="IP Address" v={<span className="text-[10.5px]">{unit.ipAddress ? `${unit.ipAddress}:${unit.scpiPort}` : "—"}</span>} />
               <Row k="MAC Address" v={<span className="text-[10px]">{unit.macAddress || "—"}</span>} />
               <Row k="Last comm" v={unit.lastComm} />

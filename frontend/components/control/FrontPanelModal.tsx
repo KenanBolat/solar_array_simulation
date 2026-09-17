@@ -165,7 +165,8 @@ export function FrontPanelModal({ unitName, onClose, onChanged }: { unitName: st
     lcdRows = [
       { text: headerRow, color: "#fbbf24" },
       { text: "NO COMMS", big: true, color: "#fbbf24" },
-      { text: `${unit.transport.toUpperCase()} ${unit.ipAddress}${unit.transport === "socket" ? ":" + unit.scpiPort : ""} · no reply`, color: "#b48a24" },
+      { text: `${unit.transport.toUpperCase()} ${unit.ipAddress}${unit.transport === "socket" ? ":" + unit.scpiPort : ""}`, color: "#b48a24" },
+      { text: (unit.lastError ?? "no reply").slice(0, 96), color: "#b48a24" },
     ];
   } else {
     lcdRows = [

@@ -19,6 +19,7 @@ export interface Unit {
   questionable: number;
   channel: number;
   transport: "vxi11" | "socket";
+  lastError: string | null;
   featured: boolean;
   enabled: boolean;
 }

@@ -242,9 +242,12 @@ function UnitsConfigTab() {
           <span className="flex flex-col gap-0.5">
             <span className="font-semibold" style={{ color: u.enabled ? "#34d399" : "#5c6678" }}>{u.enabled ? "Enabled" : "Disabled"}</span>
             {u.enabled && (
-              <span className="text-[9.5px] font-semibold" style={{ color: u.online ? "#34d399" : "#f87171" }}>
+              <span className="text-[9.5px] font-semibold" style={{ color: u.online ? "#34d399" : "#f87171" }} title={u.lastError ?? ""}>
                 {u.online ? "● reachable" : "● unreachable"}
               </span>
+            )}
+            {u.enabled && !u.online && u.lastError && (
+              <span className="whitespace-normal break-words text-[9px] leading-snug text-[#f8717199]">{u.lastError}</span>
             )}
           </span>
           <span className="flex flex-wrap gap-1.5">

@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import orm
-from .db import engine, session_scope
+from .db import engine, ensure_columns, session_scope
 from .emulator import demo_emulators
 from .poller import telemetry_poller
 from .routers import racks, units, measurements, alarms, history, runs, scenarios, config
@@ -17,6 +17,7 @@ EMULATORS = demo_emulators()  # 127.0.0.1:5025 and :5026 — the seeded demo uni
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     orm.Base.metadata.create_all(engine)
+    ensure_columns(orm.Base)
     with session_scope() as db:
         seed_if_empty(db)
     servers = [s for s in [await e.serve() for e in EMULATORS] if s]
