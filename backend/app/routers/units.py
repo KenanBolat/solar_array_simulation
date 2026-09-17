@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from .. import data, state
 from ..db import get_db
 from ..models import (CreateUnitRequest, ModeRequest, NetworkRequest, OutputRequest, ProfileRequest,
-                      SetpointRequest, TerminalExecuteRequest)
+                      SasCurveRequest, SetpointRequest, StateSlotRequest, TerminalExecuteRequest)
 from ..diagnostics import diagnose, host_addresses
 from ..poller import measure_unit, reset_backoff
 from ..scpi import TRANSPORTS, CommandResult, Instrument, close_all_sessions, close_session
@@ -50,6 +50,49 @@ def _validate_addressing(transport: str | None, channel: int | None):
 @router.get("")
 def list_units(db: Session = Depends(get_db)):
     return [state.unit_to_dict(u) for u in state.list_units(db)]
+
+
+@router.post("/discover-channels")
+def discover_channels(db: Session = Depends(get_db)):
+    """Ask every distinct mainframe how many output channels it has
+    (SYST:CHAN?) and create a unit row for any channel not configured yet, so
+    Measurements shows all of them. Existing units are never modified."""
+    # One mainframe is one ADDRESS, not one IP: two units can share an IP and
+    # differ by port (as the bundled emulators do), and that's two instruments.
+    seen: dict[tuple, list] = {}
+    for u in state.list_units(db):
+        if u.ip_address:
+            seen.setdefault((u.ip_address, u.scpi_port, u.transport), []).append(u)
+    created, report = [], []
+    for (ip, port, transport), units_here in seen.items():
+        probe = units_here[0]
+        label = ip if transport != "socket" else f"{ip}:{port}"
+        res = Instrument.for_unit(probe).channel_count()
+        if not res.ok or not res.response:
+            report.append({"mainframe": label, "channels": None, "error": res.describe()})
+            continue
+        try:
+            count = int(float(res.response))
+        except ValueError:
+            report.append({"mainframe": label, "channels": None, "error": f"unparsable reply {res.response!r}"})
+            continue
+        have = {u.channel for u in units_here}
+        for ch in range(1, count + 1):
+            if ch in have:
+                continue
+            base = probe.name.split("-CH")[0]
+            new_name = f"{base}-CH{ch}"
+            if state.get_unit(db, new_name):
+                continue
+            try:
+                u = state.create_unit(db, new_name, probe.rack_id, ip_address=ip, mac_address=probe.mac_address,
+                                       scpi_port=port, transport=transport, channel=ch, poll_ms=probe.poll_ms)
+            except ValueError as e:
+                report.append({"mainframe": label, "channels": count, "error": f"channel {ch}: {e}"})
+                continue
+            created.append(u.name)
+        report.append({"mainframe": label, "channels": count, "error": None})
+    return {"created": created, "mainframes": report}
 
 
 @router.post("/reset-connections")
@@ -180,6 +223,44 @@ def clear_protection(name: str, db: Session = Depends(get_db)):
     return {"unit": state.unit_to_detail_dict(u), "log": entry}
 
 
+@router.post("/{name}/sas-curve")
+def set_sas_curve(name: str, body: SasCurveRequest, db: Session = Depends(get_db)):
+    """The four coupled SAS parameters, sent in one program message so the
+    instrument validates the curve as a whole and rejects it atomically."""
+    u = _unit_or_404(db, name)
+    try:
+        state.check_soft_limits("SAS", body.model_dump())
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    _, entry = _dispatch(db, u, "set_sas_curve",
+                         lambda i: i.apply_sas_curve(body.isc, body.imp, body.vmp, body.voc))
+    state.mirror_sas(db, name, body.isc, body.imp, body.vmp, body.voc)
+    return {"unit": state.unit_to_detail_dict(u), "log": entry}
+
+
+@router.post("/{name}/state/save")
+def save_state(name: str, body: StateSlotRequest, db: Session = Depends(get_db)):
+    """*SAV 0|1. The guide warns NVRAM has a finite write-cycle budget, so this
+    is only ever an explicit operator action."""
+    u = _unit_or_404(db, name)
+    if body.slot not in (0, 1):
+        raise HTTPException(400, "The instrument has two state locations: 0 and 1")
+    _, entry = _dispatch(db, u, f"save_state_{body.slot}", lambda i: i.save_state(body.slot))
+    return {"unit": state.unit_to_detail_dict(u), "log": entry}
+
+
+@router.post("/{name}/state/recall")
+def recall_state(name: str, body: StateSlotRequest, db: Session = Depends(get_db)):
+    """*RCL 0|1 — mainframe-wide, so a second channel on the same IP changes too."""
+    u = _unit_or_404(db, name)
+    if body.slot not in (0, 1):
+        raise HTTPException(400, "The instrument has two state locations: 0 and 1")
+    _, entry = _dispatch(db, u, f"recall_state_{body.slot}", lambda i: i.recall_state(body.slot))
+    result, reading, _ = measure_unit(u.ip_address, u.scpi_port, u.transport, u.channel)
+    state.apply_reading(db, u, result, reading)
+    return {"unit": state.unit_to_detail_dict(u), "log": entry}
+
+
 @router.post("/{name}/shutdown")
 def safe_shutdown(name: str, db: Session = Depends(get_db)):
     u = _unit_or_404(db, name)
@@ -260,6 +341,10 @@ def apply_profile(name: str, body: ProfileRequest, db: Session = Depends(get_db)
     prof = data.SAS_PROFILES.get(body.profile)
     if not prof:
         raise HTTPException(404, f"Unknown profile {body.profile}")
+    try:
+        state.check_soft_limits("SAS", prof)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     _, e1 = _dispatch(db, u, "set_mode_sas", lambda i: i.set_mode("SAS"))
     state.mirror_mode(db, name, "SAS")
     _, e2 = _dispatch(db, u, f"apply_profile:{body.profile}",

@@ -55,7 +55,12 @@ def unit_to_dict(u: orm.Unit):
         "voltage": v, "current": i, "power": p,
         "voltageSetpoint": u.voltage_setpoint, "currentLimit": u.current_limit,
         "opMode": u.op_mode or None, "questionable": u.questionable,
+        "sas": {"isc": u.sas_isc, "imp": u.sas_imp, "vmp": u.sas_vmp, "voc": u.sas_voc}
+                if u.sas_voc is not None else None,
         "channel": u.channel, "transport": u.transport,
+        # A mainframe is an address, not just an IP — two units can share an IP
+        # and differ by port (the bundled emulators do).
+        "mainframe": f"{u.ip_address}:{u.scpi_port}" if u.transport == "socket" else u.ip_address,
         "lastError": (u.last_error or None) if u.enabled else None,
         "featured": u.featured, "enabled": u.enabled,
     }
@@ -97,6 +102,9 @@ def apply_reading(db: Session, u: orm.Unit, result: CommandResult, reading: Read
             u.voltage_setpoint = reading.volt_set
         if reading.curr_set is not None:
             u.current_limit = reading.curr_set
+        if reading.sas:
+            u.sas_isc, u.sas_imp = reading.sas["isc"], reading.sas["imp"]
+            u.sas_vmp, u.sas_voc = reading.sas["vmp"], reading.sas["voc"]
         sync_protection_alarms(db, u, reading.questionable)
         record_measurement(db, u.name, u.last_voltage, u.last_current, u.last_power, reachable=True)
     else:
@@ -271,6 +279,95 @@ def mirror_mode(db: Session, name: str, mode: str):
     unit.op_mode = mode
     db.commit()
     return unit
+
+
+def mirror_sas(db: Session, name: str, isc: float, imp: float, vmp: float, voc: float):
+    unit = db.get(orm.Unit, name)
+    unit.sas_isc, unit.sas_imp, unit.sas_vmp, unit.sas_voc = isc, imp, vmp, voc
+    db.commit()
+    return unit
+
+
+# ---------- presets (platform-stored operating points) ----------
+MAX_PRESETS = 10
+
+
+def check_soft_limits(mode: str, values: dict):
+    """The platform's operator-set ceiling, applied identically wherever a value
+    is sent — manual controls, presets, profiles. The instrument enforces its
+    own module rating on top of this and will answer -222 if we ever exceed it."""
+    max_v = data.OPERATIONAL_LIMITS["max_voltage_v"]
+    max_i = data.OPERATIONAL_LIMITS["max_current_a"]
+    checks = ([("volt", max_v, "Voltage"), ("curr", max_i, "Current limit")] if mode == "FIX"
+              else [("voc", max_v, "Voc"), ("vmp", max_v, "Vmp"), ("isc", max_i, "Isc"), ("imp", max_i, "Imp")])
+    for key, hi, label in checks:
+        v = values.get(key)
+        if v is None:
+            continue
+        if v < 0 or v > hi:
+            raise ValueError(f"{label} {v:g} is outside the platform soft limit 0 – {hi:g}")
+    if mode == "SAS":
+        if values["vmp"] >= values["voc"]:
+            raise ValueError("Vmp must be less than Voc (the instrument answers 320)")
+        if values["imp"] > values["isc"]:
+            raise ValueError("Imp must be less than or equal to Isc (the instrument answers 321)")
+
+
+def _preset_dict(p: orm.Preset):
+    return {"id": p.id, "name": p.name, "mode": p.mode, "enabled": p.enabled, "note": p.note,
+            "volt": p.volt, "curr": p.curr, "isc": p.isc, "imp": p.imp, "vmp": p.vmp, "voc": p.voc}
+
+
+def list_presets(db: Session):
+    return [_preset_dict(p) for p in db.query(orm.Preset).order_by(orm.Preset.id.asc()).all()]
+
+
+def create_preset(db: Session, name: str, mode: str, values: dict, note: str = ""):
+    if db.query(orm.Preset).count() >= MAX_PRESETS:
+        raise ValueError(f"Preset list is full ({MAX_PRESETS}) — delete one first")
+    if not name.strip():
+        raise ValueError("Preset name is required")
+    check_soft_limits(mode, values)  # refuse to store a preset that could never be applied
+    p = orm.Preset(name=name.strip(), mode=mode, note=note, created=datetime.now(timezone.utc),
+                    volt=values.get("volt", 0.0), curr=values.get("curr", 0.0),
+                    isc=values.get("isc", 0.0), imp=values.get("imp", 0.0),
+                    vmp=values.get("vmp", 0.0), voc=values.get("voc", 0.0))
+    db.add(p)
+    db.commit()
+    return _preset_dict(p)
+
+
+def set_preset_enabled(db: Session, preset_id: int, enabled: bool):
+    p = db.get(orm.Preset, preset_id)
+    if not p:
+        return None
+    p.enabled = enabled
+    db.commit()
+    return _preset_dict(p)
+
+
+def delete_preset(db: Session, preset_id: int) -> bool:
+    p = db.get(orm.Preset, preset_id)
+    if not p:
+        return False
+    db.delete(p)
+    db.commit()
+    return True
+
+
+def seed_presets(db: Session):
+    """A couple of starting points so the table isn't empty; both are ordinary
+    rows the operator can edit or delete."""
+    if db.query(orm.Preset).count():
+        return
+    now = datetime.now(timezone.utc)
+    db.add(orm.Preset(name="Bus 28 V / 5 A", mode="FIX", volt=28.0, curr=5.0, created=now,
+                       note="Fixed rectangular characteristic — plain bench supply behaviour"))
+    db.add(orm.Preset(name="BOL GEO 28 V", mode="SAS", isc=4.6, imp=4.2, vmp=28.0, voc=32.0, created=now,
+                       note="Beginning-of-life panel, geostationary orbit · Pmp 117.6 W"))
+    db.add(orm.Preset(name="EOL LEO 24 V", mode="SAS", isc=4.1, imp=3.7, vmp=24.0, voc=27.5, created=now,
+                       note="End-of-life (degraded) panel, low-earth orbit · Pmp 88.8 W"))
+    db.commit()
 
 
 # ---------- command / audit log ----------

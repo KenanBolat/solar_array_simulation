@@ -133,6 +133,7 @@ class Reading:
     questionable: int                # STAT:QUES:COND? bit field
     volt_set: float | None = None    # VOLT? — only meaningful in FIX mode
     curr_set: float | None = None    # CURR? — only meaningful in FIX mode
+    sas: dict | None = None          # {isc, imp, vmp, voc} — only read in SAS mode
     extra: dict = field(default_factory=dict)
 
     @property
@@ -348,6 +349,33 @@ class Instrument:
             return CommandResult("ERR", f"CURR:MODE {mode}", error_code=-224, error_msg="Illegal parameter value")
         return self.execute(f"CURR:MODE {m},{self.ch}", f"CURR:MODE? {self.ch}", m)
 
+    def channel_count(self) -> CommandResult:
+        """SYSTem:CHANnel[:COUNt]? — how many output modules this mainframe has."""
+        return self.query("SYST:CHAN?")
+
+    def save_state(self, slot: int) -> CommandResult:
+        """*SAV 0|1 — stores the present state in non-volatile memory. The guide
+        cautions that NVRAM has a finite number of write cycles, so this is a
+        deliberate operator action, never automatic. Mainframe-wide: both
+        channels are captured."""
+        return self.write_only(f"*SAV {int(slot)}")
+
+    def recall_state(self, slot: int) -> CommandResult:
+        """*RCL 0|1 — restores a state saved with *SAV (mainframe-wide)."""
+        return self.execute(f"*RCL {int(slot)}", f"OUTP? {self.ch}")
+
+    def read_sas_curve(self) -> tuple[CommandResult, dict | None]:
+        compound = (f"CURR:SAS:ISC? {self.ch};:CURR:SAS:IMP? {self.ch};"
+                    f":VOLT:SAS:VMP? {self.ch};:VOLT:SAS:VOC? {self.ch}")
+        res = self.query(compound)
+        if not res.ok or not res.response:
+            return res, None
+        try:
+            isc, imp, vmp, voc = [float(p) for p in res.response.split(";")]
+        except ValueError:
+            return res, None
+        return res, {"isc": isc, "imp": imp, "vmp": vmp, "voc": voc}
+
     def apply_sas_curve(self, isc: float, imp: float, vmp: float, voc: float) -> CommandResult:
         """All four coupled curve parameters in ONE message, as the guide recommends,
         so the instrument validates the whole curve and rejects it atomically
@@ -387,6 +415,12 @@ class Instrument:
                 sp = inst.query(f"VOLT? {self.ch};:CURR? {self.ch}").strip().split(";")
                 if len(sp) == 2:
                     reading.volt_set, reading.curr_set = float(sp[0]), float(sp[1])
+            elif reading.mode == "SAS":
+                curve = inst.query(f"CURR:SAS:ISC? {self.ch};:CURR:SAS:IMP? {self.ch};"
+                                    f":VOLT:SAS:VMP? {self.ch};:VOLT:SAS:VOC? {self.ch}").strip().split(";")
+                if len(curve) == 4:
+                    isc, imp, vmp, voc = [float(c) for c in curve]
+                    reading.sas = {"isc": isc, "imp": imp, "vmp": vmp, "voc": voc}
             return CommandResult("OK", compound, response=raw, latency_ms=self._ms(t0), readback_ok=True), reading
 
         out = self._run(compound, op)

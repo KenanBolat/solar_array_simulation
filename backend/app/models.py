@@ -19,6 +19,37 @@ class ModeRequest(BaseModel):
     mode: str  # FIX | SAS
 
 
+class SasCurveRequest(BaseModel):
+    isc: float
+    imp: float
+    vmp: float
+    voc: float
+
+
+class StateSlotRequest(BaseModel):
+    slot: int  # 0 | 1 — the instrument's two non-volatile state locations
+
+
+class PresetRequest(BaseModel):
+    name: str
+    mode: str = "FIX"
+    note: str = ""
+    volt: float = 0.0
+    curr: float = 0.0
+    isc: float = 0.0
+    imp: float = 0.0
+    vmp: float = 0.0
+    voc: float = 0.0
+
+
+class PresetEnableRequest(BaseModel):
+    enabled: bool
+
+
+class ApplyPresetRequest(BaseModel):
+    unit: str
+
+
 class AckRequest(BaseModel):
     pass
 

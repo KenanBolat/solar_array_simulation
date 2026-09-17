@@ -5,12 +5,12 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from . import orm
+from . import orm, state
 from .db import engine, ensure_columns, session_scope
 from .diagnostics import host_addresses
 from .emulator import demo_emulators
 from .poller import telemetry_poller
-from .routers import racks, units, measurements, alarms, history, runs, scenarios, config
+from .routers import racks, units, measurements, alarms, history, runs, scenarios, config, presets
 from .seed import FLEET_FILE, is_loopback, seed_if_empty
 
 EMULATORS = demo_emulators()  # 127.0.0.1:5025 / :5026 — started only when something is addressed at loopback
@@ -29,6 +29,7 @@ async def lifespan(app: FastAPI):
     ensure_columns(orm.Base)
     with session_scope() as db:
         seed_if_empty(db)
+        state.seed_presets(db)
     servers = []
     if _emulators_wanted():
         servers = [s for s in [await e.serve() for e in EMULATORS] if s]
@@ -55,7 +56,7 @@ app.add_middleware(
 )
 
 for r in (racks.router, units.router, measurements.router, alarms.router,
-          history.router, runs.router, scenarios.router, config.router):
+          history.router, runs.router, scenarios.router, config.router, presets.router):
     app.include_router(r)
 
 

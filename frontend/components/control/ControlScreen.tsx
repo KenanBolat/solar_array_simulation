@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { api } from "@/lib/api";
 import { usePoll } from "@/lib/useApi";
@@ -19,13 +19,25 @@ export function ControlScreen({ unitName }: { unitName: string }) {
   const [showFrontPanel, setShowFrontPanel] = useState(false);
   const [voltInput, setVoltInput] = useState("28.0");
   const [currInput, setCurrInput] = useState("5.0");
-  const [profile, setProfile] = useState("BOL_GEO_28V");
+  const [sasInput, setSasInput] = useState({ isc: "4.6", imp: "4.2", vmp: "28.0", voc: "32.0" });
+  const [presetId, setPresetId] = useState<number | null>(null);
 
-  const { data: profiles } = usePoll(() => api.configProfiles(), 60000);
+  const { data: presetData } = usePoll(() => api.presets(), 15000);
   const { data: unit, reload: reloadUnit } = usePoll(() => api.unit(unitName), 3000, [unitName]);
   const { data: telemetry, reload: reloadTelemetry } = usePoll(() => api.telemetry(unitName, range), 4000, [unitName, range]);
   const { data: history, reload: reloadHistory } = usePoll(() => api.history("All", 50), 4000, [unitName]);
   const { data: alarmsData, reload: reloadAlarms } = usePoll(() => api.alarms("Active"), 5000);
+
+  // Seed the editable fields from whatever the instrument currently reports,
+  // once, so you're editing its real state rather than a placeholder.
+  const seededRef = useRef(false);
+  useEffect(() => {
+    if (seededRef.current || !unit) return;
+    seededRef.current = true;
+    if (unit.voltageSetpoint) setVoltInput(unit.voltageSetpoint.toFixed(2));
+    if (unit.currentLimit) setCurrInput(unit.currentLimit.toFixed(2));
+    if (unit.sas) setSasInput({ isc: String(unit.sas.isc), imp: String(unit.sas.imp), vmp: String(unit.sas.vmp), voc: String(unit.sas.voc) });
+  }, [unit]);
 
   usePageHeader(`Simulator Control · ${unitName}`, unit?.pos);
 
@@ -39,8 +51,8 @@ export function ControlScreen({ unitName }: { unitName: string }) {
   const nextMode = inSas ? "FIX" : "SAS";
   const statusColor = STATUS_COLOR[unit.statusColor];
   const rows = (history?.rows ?? []).filter((h) => h.dev === unitName).slice(0, 6);
-  const profileNames = profiles?.map((p) => p.name) ?? [profile];
-  const profileDesc = profiles?.find((p) => p.name === profile)?.desc;
+  const presets = (presetData?.presets ?? []).filter((p) => p.enabled);
+  const selectedPreset = presets.find((p) => p.id === presetId) ?? presets[0];
 
   // Every action goes to the instrument and either comes back confirmed (readback)
   // or fails with the instrument's own SYST:ERR? text / the transport failure.
@@ -80,12 +92,30 @@ export function ControlScreen({ unitName }: { unitName: string }) {
     });
   };
 
-  const applyProfile = () => {
+  const applySasCurve = () => {
+    const v = { isc: parseFloat(sasInput.isc), imp: parseFloat(sasInput.imp), vmp: parseFloat(sasInput.vmp), voc: parseFloat(sasInput.voc) };
+    if (Object.values(v).some((x) => !isFinite(x))) { notify("Enter all four curve values"); return; }
+    if (v.vmp >= v.voc) { notify("Vmp must be less than Voc — the instrument answers 320"); return; }
+    if (v.imp > v.isc) { notify("Imp must be ≤ Isc — the instrument answers 321"); return; }
     ask({
-      title: `Apply Profile — ${profile}`,
-      message: `Puts ${unitName} in SAS mode (CURR:MODE SAS,${ch}) and programs the ${profile} I-V curve — Voc/Isc/Vmp/Imp in one message so the instrument validates the whole curve. ${profileDesc ?? ""}`,
-      confirmLabel: "Apply Profile", danger: false,
-      onConfirm: () => exec(`Profile ${profile}`, () => api.applyProfile(unitName, profile)),
+      title: `Program SAS curve — ${unitName}`,
+      message: `Sends all four coupled parameters in one message so the instrument validates the curve as a whole:\nCURR:SAS:ISC ${v.isc},${ch};IMP ${v.imp},${ch};:VOLT:SAS:VMP ${v.vmp},${ch};VOC ${v.voc},${ch}\nPeak power ≈ ${(v.vmp * v.imp).toFixed(1)} W.${!inSas ? " The channel is in FIX mode — switch it to SAS for the curve to drive the output." : ""}`,
+      confirmLabel: "Program curve", danger: false,
+      onConfirm: () => exec("SAS curve", () => api.setSasCurve(unitName, v)),
+    });
+  };
+
+  const applyPreset = () => {
+    if (!selectedPreset) { notify("No enabled presets — add one in Configuration → Presets"); return; }
+    const p = selectedPreset;
+    const detail = p.mode === "SAS"
+      ? `Isc ${p.isc} A · Imp ${p.imp} A · Vmp ${p.vmp} V · Voc ${p.voc} V`
+      : `${p.volt} V · ${p.curr} A`;
+    ask({
+      title: `Recall preset — ${p.name}`,
+      message: `Sets ${unitName} to ${p.mode} mode and applies ${detail}. Each command is confirmed by readback and recorded in the audit log.`,
+      confirmLabel: "Recall preset", danger: false,
+      onConfirm: () => exec(`Preset ${p.name}`, () => api.applyPreset(p.id, unitName)),
     });
   };
 
@@ -158,39 +188,55 @@ export function ControlScreen({ unitName }: { unitName: string }) {
               >
                 <span className="text-[14px]">⏻</span>{co ? "Disable Output" : "Enable Output"}
               </div>
-              <div className="flex gap-2">
-                <div className="flex-1">
-                  <label className="mb-1 block text-[10px] text-faint">Set Voltage (V)</label>
-                  <input value={voltInput} onChange={(e) => setVoltInput(e.target.value)}
-                    className="w-full rounded-md border border-line2 bg-bg px-2.5 py-1.5 font-mono text-[13px] text-ink" />
-                </div>
-                <div className="flex-1">
-                  <label className="mb-1 block text-[10px] text-faint">Current Limit (A)</label>
-                  <input value={currInput} onChange={(e) => setCurrInput(e.target.value)}
-                    className="w-full rounded-md border border-line2 bg-bg px-2.5 py-1.5 font-mono text-[13px] text-ink" />
-                </div>
-              </div>
-              <Btn variant="primary" onClick={applySetpoint}>Apply Setpoint</Btn>
-              {inSas && (
-                <div className="rounded-md border border-amber/30 bg-amber/[0.06] px-2.5 py-1.5 text-[10.5px] leading-snug text-amber">
-                  Channel is in <b>SAS</b> mode — the operating point follows the I-V curve and the load; VOLT/CURR are rejected (315) until you switch to FIX.
-                </div>
-              )}
-              <div>
-                <label className="mb-1 block text-[10px] text-faint">Apply Profile (SAS curve)</label>
+              <ModeSwitch mode={unit.opMode} onSwitch={switchMode} />
+
+              <ModePanel title="FIX mode — fixed V/I" active={!inSas}
+                hint="A rectangular characteristic: the output holds Set Voltage until the load draws Current Limit, then crosses over to constant current."
+                inactiveHint="Channel is in SAS mode — VOLT/CURR are rejected with 315 until you switch to FIX.">
                 <div className="flex gap-2">
-                  <select value={profile} onChange={(e) => setProfile(e.target.value)}
-                    className="w-full rounded-md border border-line2 bg-bg px-2.5 py-1.5 text-[12px] text-ink">
-                    {profileNames.map((p) => <option key={p}>{p}</option>)}
-                  </select>
-                  <Btn onClick={applyProfile}>Apply</Btn>
+                  <Field label="Set Voltage (V)" value={voltInput} onChange={setVoltInput} />
+                  <Field label="Current Limit (A)" value={currInput} onChange={setCurrInput} />
                 </div>
-                {profileDesc && <div className="mt-1 text-[10px] leading-snug text-faint">{profileDesc}</div>}
+                <Btn variant="primary" className="mt-2 w-full" onClick={applySetpoint}>Apply Setpoint</Btn>
+              </ModePanel>
+
+              <ModePanel title="SAS mode — solar array curve" active={inSas}
+                hint="Four coupled parameters define the exponential I-V curve; the operating point is where the load line crosses it."
+                inactiveHint="Channel is in FIX mode — you can program the curve now, but switch to SAS for it to drive the output.">
+                <div className="grid grid-cols-2 gap-2">
+                  <Field label="Isc — short circuit (A)" value={sasInput.isc} onChange={(v) => setSasInput((s) => ({ ...s, isc: v }))} />
+                  <Field label="Imp — at peak power (A)" value={sasInput.imp} onChange={(v) => setSasInput((s) => ({ ...s, imp: v }))} />
+                  <Field label="Vmp — at peak power (V)" value={sasInput.vmp} onChange={(v) => setSasInput((s) => ({ ...s, vmp: v }))} />
+                  <Field label="Voc — open circuit (V)" value={sasInput.voc} onChange={(v) => setSasInput((s) => ({ ...s, voc: v }))} />
+                </div>
+                <div className="mt-1.5 font-mono text-[10px] text-faint">
+                  Pmp ≈ {(parseFloat(sasInput.vmp) * parseFloat(sasInput.imp) || 0).toFixed(1)} W
+                  {unit.sas && <> · on instrument: {unit.sas.isc.toFixed(2)}/{unit.sas.imp.toFixed(2)} A · {unit.sas.vmp.toFixed(1)}/{unit.sas.voc.toFixed(1)} V</>}
+                </div>
+                <Btn variant="primary" className="mt-2 w-full" onClick={applySasCurve}>Program SAS Curve</Btn>
+              </ModePanel>
+
+              <div>
+                <label className="mb-1 block text-[10px] text-faint">Recall preset</label>
+                <div className="flex gap-2">
+                  <select value={selectedPreset?.id ?? ""} onChange={(e) => setPresetId(Number(e.target.value))}
+                    className="w-full rounded-md border border-line2 bg-bg px-2.5 py-1.5 text-[12px] text-ink">
+                    {presets.length === 0 && <option value="">No enabled presets</option>}
+                    {presets.map((p) => <option key={p.id} value={p.id}>{p.mode} · {p.name}</option>)}
+                  </select>
+                  <Btn onClick={applyPreset} disabled={!selectedPreset}>Recall</Btn>
+                </div>
+                {selectedPreset && (
+                  <div className="mt-1 font-mono text-[10px] leading-snug text-faint">
+                    {selectedPreset.mode === "SAS"
+                      ? `Isc ${selectedPreset.isc} · Imp ${selectedPreset.imp} · Vmp ${selectedPreset.vmp} · Voc ${selectedPreset.voc}`
+                      : `${selectedPreset.volt} V · ${selectedPreset.curr} A`}
+                  </div>
+                )}
               </div>
               <div className="flex gap-2">
                 <Btn className="flex-1" onClick={() => exec("MEAS:VOLT?/FETC:CURR?", () => api.refresh(unitName))}>Refresh</Btn>
                 <Btn className="flex-1" onClick={async () => { try { const r = await api.identify(unitName); notify(r.idn); } catch (e) { notify(e instanceof Error ? e.message : "identify failed"); } reloadAll(); }}>Query *IDN?</Btn>
-                <Btn className="flex-1" onClick={switchMode}>Mode → {nextMode}</Btn>
               </div>
               <button onClick={doShutdown} className="rounded-md border border-red bg-red/10 py-2.5 text-[12px] font-bold tracking-wide text-red">
                 ⏻ SAFE SHUTDOWN
@@ -283,6 +329,49 @@ export function ControlScreen({ unitName }: { unitName: string }) {
 
       {showTerminal && <TerminalModal unitName={unitName} onClose={() => setShowTerminal(false)} onChanged={reloadAll} />}
       {showFrontPanel && <FrontPanelModal unitName={unitName} onClose={() => setShowFrontPanel(false)} onChanged={reloadAll} />}
+    </div>
+  );
+}
+
+function ModeSwitch({ mode, onSwitch }: { mode: string | null; onSwitch: () => void }) {
+  return (
+    <div className="flex items-center gap-1 rounded-md border border-line2 bg-bg p-1">
+      {(["FIX", "SAS"] as const).map((m) => {
+        const on = mode === m;
+        return (
+          <div key={m} onClick={() => { if (!on) onSwitch(); }}
+            className="flex-1 cursor-pointer rounded px-2 py-1 text-center text-[11px] font-bold"
+            style={{ background: on ? "#2dd4ee" : "transparent", color: on ? "#04121a" : "#8a95a8" }}>
+            {m}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function ModePanel({ title, active, hint, inactiveHint, children }: {
+  title: string; active: boolean; hint: string; inactiveHint: string; children: React.ReactNode;
+}) {
+  return (
+    <div className="rounded-md border px-2.5 py-2"
+      style={{ borderColor: active ? "#2dd4ee55" : "#232a36", background: active ? "#2dd4ee08" : "transparent", opacity: active ? 1 : 0.72 }}>
+      <div className="mb-1 flex items-center justify-between">
+        <span className="text-[11px] font-semibold" style={{ color: active ? "#2dd4ee" : "#8a95a8" }}>{title}</span>
+        {active && <span className="rounded border border-cyan/40 px-1 py-0.5 text-[8.5px] font-bold text-cyan">ACTIVE</span>}
+      </div>
+      <div className="mb-2 text-[10px] leading-snug text-faint">{active ? hint : inactiveHint}</div>
+      {children}
+    </div>
+  );
+}
+
+function Field({ label, value, onChange }: { label: string; value: string; onChange: (v: string) => void }) {
+  return (
+    <div className="flex-1">
+      <label className="mb-1 block text-[10px] text-faint">{label}</label>
+      <input value={value} onChange={(e) => onChange(e.target.value)}
+        className="w-full rounded-md border border-line2 bg-bg px-2.5 py-1.5 font-mono text-[13px] text-ink" />
     </div>
   );
 }

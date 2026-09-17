@@ -1,6 +1,6 @@
 import type {
   Alarm, Diagnosis, Health, HistoryRow, Measurements, Rack, RunDetail, Run, ScenarioGraph, NodeProps,
-  SasProfile, Summary, Telemetry, Unit, UnitDetail,
+  Preset, SasCurve, SasProfile, Summary, Telemetry, Unit, UnitDetail,
 } from "./types";
 
 async function j<T>(path: string, init?: RequestInit): Promise<T> {
@@ -36,6 +36,24 @@ export const api = {
   setMode: (name: string, mode: "FIX" | "SAS") =>
     j<{ unit: UnitDetail }>(`/api/units/${name}/mode`, { method: "POST", body: JSON.stringify({ mode }) }),
   clearProtection: (name: string) => j<{ unit: UnitDetail }>(`/api/units/${name}/clear-protection`, { method: "POST" }),
+  setSasCurve: (name: string, body: SasCurve) =>
+    j<{ unit: UnitDetail }>(`/api/units/${name}/sas-curve`, { method: "POST", body: JSON.stringify(body) }),
+  saveState: (name: string, slot: number) =>
+    j<{ unit: UnitDetail }>(`/api/units/${name}/state/save`, { method: "POST", body: JSON.stringify({ slot }) }),
+  recallState: (name: string, slot: number) =>
+    j<{ unit: UnitDetail }>(`/api/units/${name}/state/recall`, { method: "POST", body: JSON.stringify({ slot }) }),
+  discoverChannels: () =>
+    j<{ created: string[]; mainframes: { mainframe: string; channels: number | null; error: string | null }[] }>(
+      "/api/units/discover-channels", { method: "POST" }),
+
+  presets: () => j<{ presets: Preset[]; max: number }>("/api/presets"),
+  createPreset: (body: Partial<Preset> & { name: string; mode: string }) =>
+    j<Preset>("/api/presets", { method: "POST", body: JSON.stringify(body) }),
+  enablePreset: (id: number, enabled: boolean) =>
+    j<Preset>(`/api/presets/${id}/enable`, { method: "POST", body: JSON.stringify({ enabled }) }),
+  deletePreset: (id: number) => j<{ ok: boolean }>(`/api/presets/${id}`, { method: "DELETE" }),
+  applyPreset: (id: number, unit: string) =>
+    j<{ unit: UnitDetail; preset: string }>(`/api/presets/${id}/apply`, { method: "POST", body: JSON.stringify({ unit }) }),
   reconnect: (name: string) => j<{ unit: UnitDetail; result: string }>(`/api/units/${name}/reconnect`, { method: "POST" }),
   resetConnections: () =>
     j<{ dropped: number; units: { name: string; online: boolean; transport: string; lastError: string | null }[] }>(

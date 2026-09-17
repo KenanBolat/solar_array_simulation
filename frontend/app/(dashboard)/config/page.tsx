@@ -8,9 +8,10 @@ import { useUi } from "@/lib/ui-context";
 import { Btn, Panel } from "@/components/ui";
 
 const TABS = [
-  "Rack Configuration", "Simulator Units", "Connection Profiles",
+  "Rack Configuration", "Simulator Units", "Presets",
   "Operational Limits", "Device Groups", "Measurement Retention", "User Permissions",
 ];
+const IMPLEMENTED = ["Rack Configuration", "Simulator Units", "Presets", "Operational Limits"];
 
 export default function ConfigPage() {
   usePageHeader("Configuration", "Administrator · system setup");
@@ -34,11 +35,12 @@ export default function ConfigPage() {
 
       {tab === "Rack Configuration" && <RackConfigTab />}
       {tab === "Simulator Units" && <UnitsConfigTab />}
+      {tab === "Presets" && <PresetsTab />}
       {tab === "Operational Limits" && <LimitsConfigTab />}
-      {!["Rack Configuration", "Simulator Units", "Operational Limits"].includes(tab) && (
+      {!IMPLEMENTED.includes(tab) && (
         <Panel className="p-10 text-center">
           <div className="mb-1.5 text-[14px] font-semibold">{tab}</div>
-          <div className="text-[12px] text-muted">Connection profiles, device groups, retention policy and permission roles configure here.</div>
+          <div className="text-[12px] text-muted">Device groups, retention policy and permission roles configure here.</div>
         </Panel>
       )}
     </div>
@@ -221,6 +223,17 @@ function UnitsConfigTab() {
     reload();
   };
 
+  const discoverChannels = async () => {
+    try {
+      const r = await api.discoverChannels();
+      const found = r.mainframes.map((m) => `${m.mainframe}: ${m.channels ?? "?"} ch${m.error ? ` (${m.error})` : ""}`).join(" · ");
+      notify(r.created.length ? `Added ${r.created.join(", ")} · ${found}` : `No new channels · ${found}`);
+    } catch (e) {
+      notify(e instanceof Error ? e.message : "Discovery failed");
+    }
+    reload();
+  };
+
   const applyFleet = () => {
     ask({
       title: "Apply fleet file",
@@ -274,6 +287,7 @@ function UnitsConfigTab() {
           )}
         </div>
         <div className="flex items-center gap-2">
+          <span title="Ask each mainframe how many output channels it has (SYST:CHAN?) and add any that aren't configured"><Btn onClick={discoverChannels}>Discover channels</Btn></span>
           <span title="Re-address the stored units from the backend's fleet file"><Btn onClick={applyFleet}>Apply fleet file</Btn></span>
           <span title="Close every instrument session this app holds and re-poll all units now"><Btn onClick={resetAll}>⟲ Reset all connections</Btn></span>
           <Btn variant="primary" onClick={() => setShowForm((s) => !s)}>{showForm ? "Cancel" : "+ Add Simulator Unit"}</Btn>
@@ -437,6 +451,163 @@ function UnitsConfigTab() {
             <b className="text-[#cfd6e2]"> VXI-11</b> is the LAN interface the E4360 Programmer&apos;s Reference documents (<span className="font-mono">TCPIP0::&lt;ip&gt;::INSTR</span>).
             <b className="text-[#cfd6e2]"> Raw socket</b> sends the same SCPI over a plain TCP port — only pick it if your instrument&apos;s LAN page confirms the port; it&apos;s what the bundled emulators on 127.0.0.1 use.
             The MAC is a label only. Every second the unit is asked <span className="font-mono">MEAS:VOLT?</span> / <span className="font-mono">FETC:CURR?</span> / <span className="font-mono">OUTP?</span> / <span className="font-mono">CURR:MODE?</span> / <span className="font-mono">STAT:QUES:COND?</span>; no valid reply means unreachable and a null sample.
+          </div>
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+const BLANK_PRESET = { name: "", mode: "FIX" as "FIX" | "SAS", volt: "28.0", curr: "5.0", isc: "4.6", imp: "4.2", vmp: "28.0", voc: "32.0", note: "" };
+
+function PresetsTab() {
+  const { notify, ask } = useUi();
+  const { data, reload } = usePoll(() => api.presets(), 10000);
+  const { data: units } = usePoll(() => api.units(), 10000);
+  const [form, setForm] = useState(BLANK_PRESET);
+  const [showForm, setShowForm] = useState(false);
+  const [target, setTarget] = useState<string>("");
+
+  const presets = data?.presets ?? [];
+  const max = data?.max ?? 10;
+  const full = presets.length >= max;
+  const targets = (units ?? []).filter((u) => u.enabled);
+  const chosen = target || targets[0]?.name || "";
+
+  const insert = async () => {
+    const num = (k: keyof typeof BLANK_PRESET) => parseFloat(form[k] as string) || 0;
+    try {
+      await api.createPreset({
+        name: form.name, mode: form.mode, note: form.note,
+        volt: num("volt"), curr: num("curr"), isc: num("isc"), imp: num("imp"), vmp: num("vmp"), voc: num("voc"),
+      });
+      notify(`Preset “${form.name}” inserted`);
+      setForm(BLANK_PRESET); setShowForm(false); reload();
+    } catch (e) {
+      notify(e instanceof Error ? e.message : "Insert failed");
+    }
+  };
+
+  const remove = (p: any) => {
+    ask({
+      title: `Delete preset — ${p.name}`,
+      message: "Removes this stored operating point. Nothing on the instrument changes.",
+      confirmLabel: "Delete preset", danger: true,
+      onConfirm: async () => { await api.deletePreset(p.id); notify(`Deleted “${p.name}”`); reload(); },
+    });
+  };
+
+  const apply = (p: any) => {
+    if (!chosen) { notify("No unit available to apply to"); return; }
+    const detail = p.mode === "SAS"
+      ? `Isc ${p.isc} A · Imp ${p.imp} A · Vmp ${p.vmp} V · Voc ${p.voc} V`
+      : `${p.volt} V · ${p.curr} A`;
+    ask({
+      title: `Apply “${p.name}” to ${chosen}`,
+      message: `Sets ${chosen} to ${p.mode} mode and sends ${detail}. Every command is confirmed by readback and recorded in the audit log.`,
+      confirmLabel: "Apply preset", danger: false,
+      onConfirm: async () => {
+        try { await api.applyPreset(p.id, chosen); notify(`“${p.name}” applied to ${chosen}`); }
+        catch (e) { notify(e instanceof Error ? e.message : "Apply failed"); }
+      },
+    });
+  };
+
+  const GRID = "34px 1fr 54px 1.5fr 70px 190px";
+
+  return (
+    <Panel className="overflow-hidden">
+      <div className="flex items-center justify-between border-b border-line px-4 py-3">
+        <div>
+          <div className="text-[13px] font-semibold">Presets</div>
+          <div className="mt-0.5 font-mono text-[10px] text-faint">
+            {presets.length} of {max} · stored by the platform, applied as SCPI · the instrument&apos;s own <span className="text-[#cfd6e2]">*SAV/*RCL</span> slots (0 and 1) live in the Virtual Front Panel
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          {targets.length > 0 && (
+            <select value={chosen} onChange={(e) => setTarget(e.target.value)} title="Unit that Apply sends to"
+              className="rounded-md border border-line2 bg-bg px-2 py-1.5 font-mono text-[11px] text-ink">
+              {targets.map((u) => <option key={u.name} value={u.name}>{u.name} (@{u.channel})</option>)}
+            </select>
+          )}
+          <Btn variant="primary" disabled={full && !showForm} onClick={() => setShowForm((s) => !s)}>
+            {showForm ? "Cancel" : full ? `Full (${max})` : "+ Insert preset"}
+          </Btn>
+        </div>
+      </div>
+
+      <div className="grid gap-2.5 border-b border-line px-4 py-2 font-mono text-[9.5px] uppercase tracking-wider text-faint" style={{ gridTemplateColumns: GRID }}>
+        <span>On</span><span>Name</span><span>Mode</span><span>Values</span><span>Pmp</span><span>Actions</span>
+      </div>
+      {presets.map((p) => (
+        <div key={p.id} className="grid items-center gap-2.5 border-b border-[#161b24] px-4 py-2.5 font-mono text-[11px]" style={{ gridTemplateColumns: GRID }}>
+          <input type="checkbox" checked={p.enabled} title={p.enabled ? "Enabled — can be applied" : "Disabled"}
+            onChange={async () => { await api.enablePreset(p.id, !p.enabled); reload(); }}
+            className="h-3.5 w-3.5 accent-cyan" />
+          <span className="flex min-w-0 flex-col">
+            <span className="truncate font-sans font-semibold" style={{ color: p.enabled ? "#e6eaf2" : "#5c6678" }}>{p.name}</span>
+            {p.note && <span className="truncate text-[9.5px] text-faint">{p.note}</span>}
+          </span>
+          <span className="rounded px-1.5 py-0.5 text-center text-[10px] font-bold"
+            style={{ color: p.mode === "SAS" ? "#fbbf24" : "#2dd4ee", border: `1px solid ${p.mode === "SAS" ? "#fbbf2455" : "#2dd4ee55"}` }}>{p.mode}</span>
+          <span className="truncate text-[#cfd6e2]">
+            {p.mode === "SAS"
+              ? `Isc ${p.isc} A · Imp ${p.imp} A · Vmp ${p.vmp} V · Voc ${p.voc} V`
+              : `${p.volt} V · ${p.curr} A`}
+          </span>
+          <span className="text-muted">{p.mode === "SAS" ? `${(p.vmp * p.imp).toFixed(1)} W` : `${(p.volt * p.curr).toFixed(1)} W`}</span>
+          <span className="flex gap-1.5">
+            <button onClick={() => apply(p)} disabled={!p.enabled || !chosen}
+              className="rounded border border-cyan/50 bg-cyan/10 px-2 py-1 font-sans text-[10px] font-semibold text-cyan disabled:opacity-40">
+              Apply{chosen ? ` → ${chosen}` : ""}
+            </button>
+            <button onClick={() => remove(p)} className="rounded border border-red/40 bg-red/10 px-2 py-1 font-sans text-[10px] font-semibold text-red">Delete</button>
+          </span>
+        </div>
+      ))}
+      {presets.length === 0 && <div className="px-4 py-6 text-center text-[12px] text-faint">No presets stored yet.</div>}
+
+      {showForm && (
+        <div className="border-t border-line px-4 py-3.5">
+          <div className="mb-2.5 text-[11px] text-muted">New preset</div>
+          <div className="mb-2.5 flex gap-2.5">
+            <div className="w-[220px]">
+              <label className="mb-1 block text-[10px] text-faint">Name</label>
+              <input value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} placeholder="Eclipse exit"
+                className="w-full rounded-md border border-line2 bg-bg px-2.5 py-2 font-mono text-[12px] text-ink" />
+            </div>
+            <div className="w-[120px]">
+              <label className="mb-1 block text-[10px] text-faint">Mode</label>
+              <select value={form.mode} onChange={(e) => setForm((f) => ({ ...f, mode: e.target.value as "FIX" | "SAS" }))}
+                className="w-full rounded-md border border-line2 bg-bg px-2.5 py-2 text-[12px] text-ink">
+                <option value="FIX">FIX</option>
+                <option value="SAS">SAS</option>
+              </select>
+            </div>
+            <div className="flex-1">
+              <label className="mb-1 block text-[10px] text-faint">Note (optional)</label>
+              <input value={form.note} onChange={(e) => setForm((f) => ({ ...f, note: e.target.value }))} placeholder="what this operating point is for"
+                className="w-full rounded-md border border-line2 bg-bg px-2.5 py-2 text-[12px] text-ink" />
+            </div>
+          </div>
+          <div className="mb-2.5 grid grid-cols-4 gap-2.5">
+            {(form.mode === "SAS"
+              ? ([["isc", "Isc — short circuit (A)"], ["imp", "Imp — at peak power (A)"], ["vmp", "Vmp — at peak power (V)"], ["voc", "Voc — open circuit (V)"]] as const)
+              : ([["volt", "Voltage (V)"], ["curr", "Current limit (A)"]] as const)
+            ).map(([k, label]) => (
+              <div key={k}>
+                <label className="mb-1 block text-[10px] text-faint">{label}</label>
+                <input value={form[k] as string} onChange={(e) => setForm((f) => ({ ...f, [k]: e.target.value }))}
+                  className="w-full rounded-md border border-line2 bg-bg px-2.5 py-2 font-mono text-[12px] text-ink" />
+              </div>
+            ))}
+          </div>
+          <Btn variant="primary" onClick={insert}>Insert preset</Btn>
+          <div className="mt-2 text-[10px] leading-relaxed text-faint">
+            {form.mode === "SAS"
+              ? "The four curve parameters are coupled — the instrument validates them together and rejects the set if Vmp ≥ Voc (320), Imp > Isc (321) or the peak point is too small (322)."
+              : "FIX mode programs a rectangular characteristic; the instrument rejects VOLT/CURR while a channel is in SAS mode (315)."}
           </div>
         </div>
       )}

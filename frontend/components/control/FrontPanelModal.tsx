@@ -4,10 +4,17 @@ import { api } from "@/lib/api";
 import { usePoll } from "@/lib/useApi";
 import { useUi } from "@/lib/ui-context";
 
-const FP_MENU = ["Output On/Off", "Set Voltage", "Set Current Limit", "Mode FIX / SAS", "Clear Protection", "I/O Configuration"];
 const MODE_LABEL: Record<string, string> = { FIX: "FIX", SAS: "SAS", TABL: "TABL" };
 
-type Mode = "meter" | "entry" | "menu";
+// Top-level soft menu. "Recall preset" and the two state items open submenus;
+// the state slots are the instrument's own *SAV/*RCL locations 0 and 1.
+const FP_MENU = [
+  "Output On/Off", "Set Voltage", "Set Current Limit", "Mode FIX / SAS",
+  "Recall preset ▸", "Recall state *RCL ▸", "Save state *SAV ▸",
+  "Clear Protection", "I/O Configuration",
+];
+
+type Mode = "meter" | "entry" | "menu" | "presets" | "recall" | "save";
 
 function shortError(e: unknown): string {
   const msg = e instanceof Error ? e.message : String(e);
@@ -21,6 +28,8 @@ function shortError(e: unknown): string {
 export function FrontPanelModal({ unitName, onClose, onChanged }: { unitName: string; onClose: () => void; onChanged: () => void }) {
   const { notify } = useUi();
   const { data: unit, reload } = usePoll(() => api.unit(unitName), 1500, [unitName]);
+  const { data: presetData } = usePoll(() => api.presets(), 20000);
+  const presets = (presetData?.presets ?? []).filter((p) => p.enabled);
 
   const [mode, setMode] = useState<Mode>("meter");
   const [field, setField] = useState<"VOLTAGE" | "CURRENT" | null>(null);
@@ -77,12 +86,21 @@ export function FrontPanelModal({ unitName, onClose, onChanged }: { unitName: st
   const clearProtection = () =>
     send(`OUTP:PROT:CLE (@${chan})`, () => api.clearProtection(unitName), "PROTECTION CLEARED");
 
+  const recallPreset = (p: { id: number; name: string; mode: string }) =>
+    send(`preset ${p.name}`, () => api.applyPreset(p.id, unitName), `${p.mode} PRESET RECALLED\n${p.name.toUpperCase().slice(0, 22)}`);
+
+  const recallState = (slot: number) =>
+    send(`*RCL ${slot}`, () => api.recallState(unitName, slot), `*RCL ${slot}\nSTATE RECALLED`);
+
+  const saveState = (slot: number) =>
+    send(`*SAV ${slot}`, () => api.saveState(unitName, slot), `*SAV ${slot}\nSTATE STORED`);
+
   const func = (name: string) => {
     if (name === "voltage") { setMode("entry"); setField("VOLTAGE"); setBuf(""); }
     else if (name === "current") { setMode("entry"); setField("CURRENT"); setBuf(""); }
     else if (name === "meter") setMode("meter");
-    else if (name === "menu") setMode("menu");
-    else if (name === "back") { setMode("meter"); setBuf(""); }
+    else if (name === "menu") { setMode("menu"); setMenuIdx(0); }
+    else if (name === "back") { setMode(mode === "meter" || mode === "menu" ? "meter" : "menu"); setBuf(""); setMenuIdx(0); }
     else if (name === "channel") doFlash(`CHANNEL (@${chan}) · FIXED IN CONFIG`);
     else if (name === "help") doFlash("USE NAV + SEL · DIGITS THEN ENTER");
     else if (name === "error") doFlash(unit.questionable ? `STAT:QUES:COND? +${unit.questionable}\nPROTECTION TRIPPED` : "STAT:QUES:COND? +0\nNO FAULTS");
@@ -115,18 +133,35 @@ export function FrontPanelModal({ unitName, onClose, onChanged }: { unitName: st
     }
   };
 
+  const listLength = mode === "presets" ? Math.max(1, presets.length) : mode === "menu" ? FP_MENU.length : 2;
+
   const nav = async (dir: "up" | "down" | "left" | "right" | "sel") => {
-    if (mode === "menu") {
-      if (dir === "up") setMenuIdx((i) => (i + FP_MENU.length - 1) % FP_MENU.length);
-      else if (dir === "down") setMenuIdx((i) => (i + 1) % FP_MENU.length);
-      else if (dir === "sel") {
-        if (menuIdx === 0) func("onoff");
-        else if (menuIdx === 1) { setMode("entry"); setField("VOLTAGE"); setBuf(""); }
-        else if (menuIdx === 2) { setMode("entry"); setField("CURRENT"); setBuf(""); }
-        else if (menuIdx === 3) toggleMode();
-        else if (menuIdx === 4) clearProtection();
-        else doFlash(`${unit.ipAddress}:${unit.scpiPort} ${unit.transport.toUpperCase()}\n${unit.visa}`, 3000);
+    if (mode === "menu" || mode === "presets" || mode === "recall" || mode === "save") {
+      if (dir === "up") { setMenuIdx((i) => (i + listLength - 1) % listLength); return; }
+      if (dir === "down") { setMenuIdx((i) => (i + 1) % listLength); return; }
+      if (dir === "left") { setMode(mode === "menu" ? "meter" : "menu"); setMenuIdx(0); return; }
+      if (dir !== "sel") return;
+
+      // Drop back to the meter after acting, so the confirmation (or the
+      // instrument's rejection) is actually visible on the LCD.
+      if (mode === "presets") {
+        const p = presets[menuIdx];
+        setMode("meter");
+        if (p) await recallPreset(p);
+        return;
       }
+      if (mode === "recall") { setMode("meter"); await recallState(menuIdx); return; }
+      if (mode === "save") { setMode("meter"); await saveState(menuIdx); return; }
+
+      if (menuIdx === 0) func("onoff");
+      else if (menuIdx === 1) { setMode("entry"); setField("VOLTAGE"); setBuf(""); }
+      else if (menuIdx === 2) { setMode("entry"); setField("CURRENT"); setBuf(""); }
+      else if (menuIdx === 3) toggleMode();
+      else if (menuIdx === 4) { setMode("presets"); setMenuIdx(0); }
+      else if (menuIdx === 5) { setMode("recall"); setMenuIdx(0); }
+      else if (menuIdx === 6) { setMode("save"); setMenuIdx(0); }
+      else if (menuIdx === 7) clearProtection();
+      else doFlash(`${unit.ipAddress}:${unit.scpiPort} ${unit.transport.toUpperCase()}\n${unit.visa}`, 3000);
       return;
     }
     if (dir === "up" || dir === "down") {
@@ -155,8 +190,42 @@ export function FrontPanelModal({ unitName, onClose, onChanged }: { unitName: st
       { text: `Range ${rng}  Enter=apply`, color: "#4fbf9c" },
     ];
   } else if (mode === "menu") {
-    lcdRows = [{ text: "MAIN MENU", color: "#7be8c8" }];
-    FP_MENU.forEach((m, i) => lcdRows.push({ text: (i === menuIdx ? "▸ " : "  ") + m, color: i === menuIdx ? "#9affd9" : "#3f9c80" }));
+    // Scroll a 5-line window so a long menu still reads like a real panel.
+    const win = 5;
+    const start = Math.max(0, Math.min(menuIdx - 2, FP_MENU.length - win));
+    lcdRows = [{ text: `MAIN MENU            ${menuIdx + 1}/${FP_MENU.length}`, color: "#7be8c8" }];
+    FP_MENU.slice(start, start + win).forEach((m, i) => {
+      const idx = start + i;
+      lcdRows.push({ text: (idx === menuIdx ? "▸ " : "  ") + m, color: idx === menuIdx ? "#9affd9" : "#3f9c80" });
+    });
+  } else if (mode === "presets") {
+    lcdRows = [{ text: "RECALL PRESET        Sel=apply", color: "#7be8c8" }];
+    if (presets.length === 0) {
+      lcdRows.push({ text: "  no enabled presets", color: "#3f9c80" });
+      lcdRows.push({ text: "  add them in Configuration", color: "#3f9c80" });
+    } else {
+      const win = 5;
+      const start = Math.max(0, Math.min(menuIdx - 2, presets.length - win));
+      presets.slice(start, start + win).forEach((p, i) => {
+        const idx = start + i;
+        const vals = p.mode === "SAS" ? `${p.vmp}V/${p.imp}A curve` : `${p.volt}V ${p.curr}A`;
+        lcdRows.push({
+          text: (idx === menuIdx ? "▸ " : "  ") + `${p.mode} ${p.name}`.slice(0, 24).padEnd(25) + vals,
+          color: idx === menuIdx ? "#9affd9" : "#3f9c80",
+        });
+      });
+    }
+  } else if (mode === "recall" || mode === "save") {
+    const saving = mode === "save";
+    lcdRows = [{ text: saving ? "SAVE STATE  *SAV" : "RECALL STATE  *RCL", color: "#7be8c8" }];
+    [0, 1].forEach((slot) => lcdRows.push({
+      text: (slot === menuIdx ? "▸ " : "  ") + `Location ${slot}`,
+      color: slot === menuIdx ? "#9affd9" : "#3f9c80",
+    }));
+    lcdRows.push({
+      text: saving ? "  NVRAM write — finite cycles" : "  mainframe-wide, both channels",
+      color: "#b48a24",
+    });
   } else if (flash) {
     const lines = flash.split("\n");
     const bad = /REJECTED|UNREACHABLE|TIMEOUT|FAILED|TRIPPED/.test(lines[0]);
@@ -247,8 +316,8 @@ export function FrontPanelModal({ unitName, onClose, onChanged }: { unitName: st
                   className="flex select-none items-center justify-center rounded-md border font-sans text-[11px] font-semibold"
                   style={{
                     background: "#1c222c",
-                    borderColor: (fn === "menu" && mode === "menu") || (fn === "meter" && mode === "meter") ? "#2dd4ee" : "#2c3543",
-                    color: fn === "error" ? (unit.questionable ? "#fbbf24" : "#8a95a8") : ((fn === "menu" && mode === "menu") || (fn === "meter" && mode === "meter")) ? "#fff" : "#cfd6e2",
+                    borderColor: (fn === "menu" && mode !== "meter" && mode !== "entry") || (fn === "meter" && mode === "meter") ? "#2dd4ee" : "#2c3543",
+                    color: fn === "error" ? (unit.questionable ? "#fbbf24" : "#8a95a8") : ((fn === "menu" && mode !== "meter" && mode !== "entry") || (fn === "meter" && mode === "meter")) ? "#fff" : "#cfd6e2",
                   }}
                 >
                   {label}
@@ -310,7 +379,7 @@ export function FrontPanelModal({ unitName, onClose, onChanged }: { unitName: st
           </div>
         </div>
         <div className="mt-2.5 text-center font-mono text-[11px] text-faint">
-          Every key sends a real SCPI message to {unit.ipAddress} and waits for <b className="text-[#cfd6e2]">*OPC?</b> + <b className="text-[#cfd6e2]">SYST:ERR?</b> · readings are <b className="text-[#cfd6e2]">MEAS:VOLT?</b>/<b className="text-[#cfd6e2]">FETC:CURR?</b> polled every second · <b className="text-[#cfd6e2]">Error</b> shows STAT:QUES:COND?
+          Every key sends a real SCPI message to {unit.ipAddress} and waits for <b className="text-[#cfd6e2]">*OPC?</b> + <b className="text-[#cfd6e2]">SYST:ERR?</b> · <b className="text-[#cfd6e2]">Menu</b> → nav ▲▼ → <b className="text-[#cfd6e2]">Sel</b> for presets and <b className="text-[#cfd6e2]">*SAV</b>/<b className="text-[#cfd6e2]">*RCL</b> state slots · ◄ or <b className="text-[#cfd6e2]">Back</b> steps out
         </div>
       </div>
     </div>

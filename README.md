@@ -107,15 +107,56 @@ disable / edit addressing) with:
 Platform-level soft limits (32 V / 6 A, `data.OPERATIONAL_LIMITS`) are enforced before a
 command is sent; the instrument enforces its own module ratings on top.
 
+### Channels
+
+An E4360 mainframe holds up to two output modules, and **one unit here is one
+channel**, so each is addressed, polled, controlled and audited independently.
+Configuration → Simulator Units → **Discover channels** asks every configured
+mainframe `SYST:CHAN?` and creates a unit for any channel not set up yet (named
+`<unit>-CH<n>`). Measurements groups the channel chips by mainframe and plots all
+of them by default. A mainframe is identified by its full address, not just its
+IP — two units can share an IP and differ by port.
+
+### Presets and saved states
+
+Two different mechanisms, deliberately kept apart:
+
+- **Presets** (Configuration → Presets) are stored by *this platform* — up to 10,
+  named, each either a FIX pair (V, A) or a SAS curve (Isc, Imp, Vmp, Voc), with
+  enable / insert / delete / apply. Applying one selects the mode and sends the
+  values as ordinary SCPI, confirmed by readback and audited like any manual
+  command. They are also recallable from the Virtual Front Panel
+  (Menu → Recall preset) and the control screen.
+- **Instrument states** are the E4360's own `*SAV 0|1` / `*RCL 0|1` — exactly two
+  locations in the instrument's non-volatile memory, mainframe-wide (both
+  channels), available from the Virtual Front Panel (Menu → Save/Recall state).
+  The guide cautions that NVRAM has a finite write-cycle budget, so `*SAV` is
+  only ever an explicit operator action, never automatic.
+
+Values are validated identically wherever they are sent — manual control, preset
+or profile — against the platform soft limits in `data.OPERATIONAL_LIMITS` plus
+the SAS coupling rules (Vmp < Voc, Imp ≤ Isc). A preset that would violate them
+is refused at storage time rather than failing later at the instrument.
+
 ### Operating modes and "Apply Solar Profile"
 
-`CURR:MODE FIX|SAS,(@n)` selects how the channel behaves. In **FIX** mode the output is
-a fixed rectangular V/I characteristic set by `VOLT`/`CURR`. In **SAS** mode it follows
-an exponential solar-array I-V curve programmed by four coupled parameters — the
-platform sends them in one message so the instrument validates the curve as a whole:
-`CURR:SAS:ISC 4.6,(@1);IMP 4.2,(@1);:VOLT:SAS:VMP 28,(@1);VOC 32,(@1)`. In SAS mode a
-plain `VOLT`/`CURR` is rejected with `315 Settings conflict error` — the UI warns about
-this and the rejection is shown verbatim. Profiles live in `data.SAS_PROFILES`.
+`CURR:MODE FIX|SAS,(@n)` selects how the channel behaves, and the two are genuinely
+separate modes — the control screen shows them as two panels with the active one
+highlighted. In **FIX** mode the output is a fixed rectangular V/I characteristic set
+by `VOLT`/`CURR`. In **SAS** mode it follows an exponential solar-array I-V curve
+defined by **four coupled parameters** — short-circuit current, the current and
+voltage at the peak-power point, and open-circuit voltage — sent in one message so
+the instrument validates the whole curve and rejects it atomically:
+
+```
+CURR:SAS:ISC 4.6,(@1);IMP 4.2,(@1);:VOLT:SAS:VMP 28,(@1);VOC 32,(@1)
+```
+
+Rejections you will see: `320` Vmp ≥ Voc, `321` Imp > Isc, `322` peak point too
+small, `328` Voc above the module rating. In SAS mode a plain `VOLT`/`CURR` is
+rejected with `315 Settings conflict error` — the UI warns about this and shows the
+rejection verbatim. The curve currently on the instrument is read back every poll
+(`CURR:SAS:ISC?` …) and shown next to the values you're editing.
 
 ### Deploying for the lab (one backend for everyone)
 

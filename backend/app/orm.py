@@ -42,6 +42,10 @@ class Unit(Base):
     op_mode = Column(String, nullable=False, default="")       # CURR:MODE? -> FIX | SAS | TABL
     voltage_setpoint = Column(Float, nullable=False, default=0.0)  # VOLT? (FIXed mode)
     current_limit = Column(Float, nullable=False, default=0.0)     # CURR? (FIXed mode)
+    sas_isc = Column(Float, nullable=True)   # CURR:SAS:ISC? — the four coupled SAS curve
+    sas_imp = Column(Float, nullable=True)   # CURR:SAS:IMP?   parameters, read back in SAS mode
+    sas_vmp = Column(Float, nullable=True)   # VOLT:SAS:VMP?
+    sas_voc = Column(Float, nullable=True)   # VOLT:SAS:VOC?
     questionable = Column(Integer, nullable=False, default=0)  # STAT:QUES:COND? bit field
     alarm = Column(String, nullable=False, default="normal")   # normal | warning | offline
     last_voltage = Column(Float, nullable=True)                # MEAS:VOLT? — null when comms are down
@@ -80,6 +84,27 @@ class CommandHistoryRow(Base):
     response = Column(String, nullable=False, default="")      # readback / query response
     error_code = Column(Integer, nullable=True)                # from SYST:ERR? when the instrument rejected it
     error_msg = Column(String, nullable=False, default="")
+
+
+class Preset(Base):
+    """A named operating point stored by the platform (not in the instrument's
+    own 2-slot non-volatile memory — see *SAV/*RCL, which has a documented
+    write-cycle limit). Applying one dispatches the same SCPI the manual
+    controls do: VOLT/CURR for a FIX preset, the four coupled curve
+    parameters for a SAS preset."""
+    __tablename__ = "presets"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String, nullable=False)
+    mode = Column(String, nullable=False, default="FIX")  # FIX | SAS
+    volt = Column(Float, nullable=False, default=0.0)     # FIX
+    curr = Column(Float, nullable=False, default=0.0)     # FIX
+    isc = Column(Float, nullable=False, default=0.0)      # SAS
+    imp = Column(Float, nullable=False, default=0.0)
+    vmp = Column(Float, nullable=False, default=0.0)
+    voc = Column(Float, nullable=False, default=0.0)
+    enabled = Column(Boolean, nullable=False, default=True)  # disabled presets stay stored but can't be applied
+    note = Column(String, nullable=False, default="")
+    created = Column(DateTime, nullable=False)
 
 
 class AlarmRow(Base):

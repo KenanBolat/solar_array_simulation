@@ -17,11 +17,30 @@ export interface Unit {
   currentLimit: number;
   opMode: "FIX" | "SAS" | "TABL" | null;
   questionable: number;
+  sas: SasCurve | null;
+  mainframe: string;
   channel: number;
   transport: "auto" | "vxi11" | "socket";
   lastError: string | null;
   featured: boolean;
   enabled: boolean;
+}
+
+export interface SasCurve {
+  isc: number;
+  imp: number;
+  vmp: number;
+  voc: number;
+}
+
+export interface Preset extends SasCurve {
+  id: number;
+  name: string;
+  mode: "FIX" | "SAS";
+  enabled: boolean;
+  note: string;
+  volt: number;
+  curr: number;
 }
 
 export interface Diagnosis {

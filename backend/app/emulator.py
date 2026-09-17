@@ -86,6 +86,8 @@ class E4360Emulator:
         self.clients = 0
         self._writers: set[asyncio.StreamWriter] = set()
         self.rebooting_until = 0.0
+        self.saved: dict[int, list[dict]] = {}   # *SAV/*RCL locations 0 and 1 (non-volatile in the real thing)
+        self.pon_state = "RST"
         self.errors: deque[tuple[int, str]] = deque()
         self.rlstate = "LOC"
         for ch in channels:
@@ -261,6 +263,26 @@ class E4360Emulator:
             return None
         if canon in ("*ESR", "*STB", "*TST", "*OPT") and q:
             return "0"
+        if canon in ("*SAV", "*RCL") and not q:
+            try:
+                slot = int(float(args.strip()))
+            except ValueError:
+                self.push_error(-104, "Data type error"); return None
+            if slot not in (0, 1):
+                self.push_error(-222, "Data out of range"); return None
+            if canon == "*SAV":
+                self.saved[slot] = [{k: getattr(c, k) for k in
+                                      ("mode", "volt", "curr", "ovp", "ocp", "output", "sas", "sas_mode")}
+                                     for c in self.channels]
+                self.saved[slot] = [{**s, "sas": dict(s["sas"])} for s in self.saved[slot]]
+            else:
+                snapshot = self.saved.get(slot)
+                if snapshot is None:
+                    self.push_error(-224, "Illegal parameter value"); return None
+                for c, s in zip(self.channels, snapshot):
+                    for k, v in s.items():
+                        setattr(c, k, dict(v) if isinstance(v, dict) else v)
+            return None
 
         chans, rest = self._chanlist(args, q)
         if chans is None:
@@ -398,6 +420,14 @@ class E4360Emulator:
             return ",".join("+0" for _ in chans)
         if canon == "POW:LIM" and q:
             return ",".join(self._nr3(c.rating["pmax"]) for c in chans)
+        if canon == "OUTP:PON:STAT":
+            if q:
+                return self.pon_state
+            v = rest.upper()
+            if v not in ("RST", "RCL0"):
+                self.push_error(-141, "Invalid character data"); return None
+            self.pon_state = v
+            return None
         if canon in ("DISP:TEXT", "DISP:ENAB", "DISP:VIEW") and not q:
             return None
 
@@ -455,11 +485,15 @@ class E4360Emulator:
 
 
 def demo_emulators() -> list[E4360Emulator]:
-    """Two single-module E4361A mainframes. The first is left as an operator
-    might have left it — 28 V / 5 A programmed, output on — so the demo has
-    something to show; the second is at its *RST state."""
-    active = E4360Emulator(5025, [Channel("E4361A", "MY00001001")], serial="MY00000001")
+    """Two two-module mainframes, like the real racks: channel 1 and channel 2
+    each have their own output module, so SYST:CHAN? answers 2 and channel
+    discovery has something to find. The first mainframe is left as an
+    operator might have left it — 28 V / 5 A programmed, output on — so the
+    demo has something to show; everything else sits at its *RST state."""
+    active = E4360Emulator(5025, [Channel("E4361A", "MY00001001"), Channel("E4362A", "MY00001002")],
+                           serial="MY00000001")
     ch = active.channels[0]
     ch.volt, ch.curr, ch.output = 28.0, 5.0, True
-    standby = E4360Emulator(5026, [Channel("E4361A", "MY00001002")], serial="MY00000002")
+    standby = E4360Emulator(5026, [Channel("E4361A", "MY00002001"), Channel("E4362A", "MY00002002")],
+                            serial="MY00000002")
     return [active, standby]

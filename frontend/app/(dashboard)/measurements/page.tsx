@@ -24,7 +24,7 @@ function seriesToSegments(values: (number | null)[], lo: number, hi: number, w: 
 }
 
 export default function MeasurementsPage() {
-  usePageHeader("Measurements", "Telemetry explorer · multi-unit comparison");
+  usePageHeader("Measurements", "Telemetry explorer · every channel of every mainframe");
   const { notify } = useUi();
   const [range, setRange] = useState("30 min");
   const [selected, setSelected] = useState<string[]>([]);
@@ -33,43 +33,66 @@ export default function MeasurementsPage() {
   const { data: units } = usePoll(() => api.units(), 8000);
   const { data: meas } = usePoll(() => api.measurements(selected, range), 4000, [selected.join(","), range]);
 
-  // Pick a sensible default selection the first time real units arrive.
+  // Every channel of every configured mainframe is plotted by default — an
+  // E4360 holds two output modules, and both are units here.
   useEffect(() => {
     if (!defaultedRef.current && units && units.length > 0) {
       defaultedRef.current = true;
-      setSelected(units.filter((u) => u.online).slice(0, 5).map((u) => u.name));
+      setSelected(units.filter((u) => u.enabled).map((u) => u.name));
     }
   }, [units]);
 
   // Enabled units stay pickable even while their comms link is down, so you
   // can still pull up their history from before/after the outage — only
   // fully-removed (disabled) units drop off the list.
-  const pickable = (units ?? []).filter((u) => u.enabled).slice(0, 10);
+  const pickable = (units ?? []).filter((u) => u.enabled);
+
+  // Group the chips by mainframe so two channels of one instrument read as
+  // one instrument, not two unrelated devices.
+  const byMainframe = pickable.reduce<Record<string, typeof pickable>>((acc, u) => {
+    (acc[u.mainframe || "unaddressed"] ||= []).push(u);
+    return acc;
+  }, {});
+  Object.values(byMainframe).forEach((list) => list.sort((a, b) => a.channel - b.channel));
 
   const toggle = (name: string) =>
     setSelected((s) => (s.includes(name) ? s.filter((x) => x !== name) : [...s, name]));
+  const allSelected = pickable.length > 0 && pickable.every((u) => selected.includes(u.name));
 
   return (
     <div className="p-5">
       <div className="mb-4 flex flex-wrap items-start justify-between gap-4">
         <div>
-          <div className="mb-1.5 text-[10px] uppercase tracking-wider text-faint">Units compared</div>
-          <div className="flex flex-wrap gap-1.5">
-            {pickable.map((u) => {
-              const active = selected.includes(u.name);
-              const c = STATUS_COLOR[u.statusColor];
-              return (
-                <div key={u.name} onClick={() => toggle(u.name)} title={u.online ? undefined : "Comms currently down"}
-                  className="cursor-pointer rounded-md px-2.5 py-1 font-mono text-[11px] font-semibold"
-                  style={{
-                    color: active ? "#04121a" : u.online ? "#8a95a8" : "#f87171",
-                    background: active ? c : "transparent",
-                    border: `1px solid ${active ? c : u.online ? "#232a36" : "#f8717155"}`,
-                  }}>
-                  {u.name}{!u.online && !active && " ⚠"}
+          <div className="mb-1.5 flex items-center gap-2.5">
+            <span className="text-[10px] uppercase tracking-wider text-faint">Channels compared</span>
+            <button onClick={() => setSelected(allSelected ? [] : pickable.map((u) => u.name))}
+              className="rounded border border-line2 bg-panel2 px-1.5 py-0.5 text-[9.5px] font-semibold text-muted">
+              {allSelected ? "Clear all" : "Select all"}
+            </button>
+          </div>
+          <div className="flex flex-wrap items-start gap-3">
+            {Object.entries(byMainframe).map(([mf, list]) => (
+              <div key={mf} className="rounded-md border border-line bg-panel px-2 py-1.5">
+                <div className="mb-1 font-mono text-[9px] text-faint">{mf}</div>
+                <div className="flex flex-wrap gap-1.5">
+                  {list.map((u) => {
+                    const active = selected.includes(u.name);
+                    const c = STATUS_COLOR[u.statusColor];
+                    return (
+                      <div key={u.name} onClick={() => toggle(u.name)} title={u.online ? `${u.name} · channel ${u.channel}` : "Comms currently down"}
+                        className="cursor-pointer rounded-md px-2.5 py-1 font-mono text-[11px] font-semibold"
+                        style={{
+                          color: active ? "#04121a" : u.online ? "#8a95a8" : "#f87171",
+                          background: active ? c : "transparent",
+                          border: `1px solid ${active ? c : u.online ? "#232a36" : "#f8717155"}`,
+                        }}>
+                        {u.name} <span style={{ opacity: 0.7 }}>(@{u.channel})</span>{!u.online && !active && " ⚠"}
+                      </div>
+                    );
+                  })}
                 </div>
-              );
-            })}
+              </div>
+            ))}
           </div>
         </div>
         <div className="flex items-end gap-2">
@@ -85,8 +108,8 @@ export default function MeasurementsPage() {
 
       {selected.length === 0 && (
         <div className="mb-4 rounded-[10px] border border-dashed border-line2 bg-panel p-12 text-center">
-          <div className="mb-1.5 text-[13px] font-semibold text-[#cfd6e2]">No units selected</div>
-          <div className="text-[12px] text-muted">Pick one or more units above to plot their telemetry.</div>
+          <div className="mb-1.5 text-[13px] font-semibold text-[#cfd6e2]">No channels selected</div>
+          <div className="text-[12px] text-muted">Pick one or more channels above to plot their telemetry.</div>
         </div>
       )}
 
@@ -133,13 +156,14 @@ export default function MeasurementsPage() {
               <span className="font-mono text-[10.5px] text-faint">{meas?.sampleText}</span>
             </div>
             <div className="grid gap-2.5 border-b border-line px-3.5 py-2 font-mono text-[9px] uppercase tracking-wider text-faint" style={{ gridTemplateColumns: "76px 66px 1fr 1fr 1fr 52px 66px" }}>
-              <span>Unit</span><span>Time</span><span>Voltage</span><span>Current</span><span>Power</span><span>Out</span><span>Quality</span>
+              <span>Channel</span><span>Time</span><span>Voltage</span><span>Current</span><span>Power</span><span>Out</span><span>Quality</span>
             </div>
             {(meas?.rows ?? []).map((m, idx) => {
               const u = (units ?? []).find((x) => x.name === m.unit);
               return (
                 <div key={idx} className="grid items-center gap-2.5 border-b border-[#161b24] px-3.5 py-2 font-mono text-[11px]" style={{ gridTemplateColumns: "76px 66px 1fr 1fr 1fr 52px 66px" }}>
-                  <span className="font-bold" style={{ color: u ? STATUS_COLOR[u.statusColor] : "#e6eaf2" }}>{m.unit}</span>
+                  <span className="font-bold" style={{ color: u ? STATUS_COLOR[u.statusColor] : "#e6eaf2" }}
+                    title={u ? `${u.mainframe} (@${u.channel})` : undefined}>{m.unit}</span>
                   <span className="text-muted">{m.time}</span>
                   <span>{m.v != null ? <>{m.v.toFixed(3)}<span className="text-faint"> V</span></> : <span className="text-faint">—</span>}</span>
                   <span>{m.i != null ? <>{m.i.toFixed(3)}<span className="text-faint"> A</span></> : <span className="text-faint">—</span>}</span>
@@ -160,7 +184,8 @@ export default function MeasurementsPage() {
             <div className="flex justify-between"><span className="text-faint">Poll interval</span><span>1 s</span></div>
             <div className="flex justify-between"><span className="text-faint">Raw retention</span><span>7 days</span></div>
             <div className="flex justify-between"><span className="text-faint">Downsampled</span><span>1 year @ 1 min</span></div>
-            <div className="flex justify-between"><span className="text-faint">Units plotted</span><span>{meas?.count ?? 0}</span></div>
+            <div className="flex justify-between"><span className="text-faint">Channels plotted</span><span>{meas?.count ?? 0}</span></div>
+            <div className="flex justify-between"><span className="text-faint">Mainframes</span><span>{Object.keys(byMainframe).length}</span></div>
           </div>
           <div className="my-3.5 h-px bg-line" />
           <div className="mb-2 text-[10px] uppercase tracking-wider text-faint">Quality flags</div>

@@ -14,7 +14,7 @@ SAS_PROFILES = {
                     "desc": "Beginning-of-life panel, geostationary orbit, 28 V bus · Pmp 117.6 W"},
     "EOL_LEO_24V": {"voc": 27.5, "isc": 4.1, "vmp": 24.0, "imp": 3.7,
                     "desc": "End-of-life (degraded) panel, low-earth orbit, 24 V bus · Pmp 88.8 W"},
-    "ECLIPSE_EXIT_COLD": {"voc": 34.5, "isc": 4.7, "vmp": 30.0, "imp": 4.3,
+    "ECLIPSE_EXIT_COLD": {"voc": 32.0, "isc": 4.7, "vmp": 30.0, "imp": 4.3,
                           "desc": "Cold panel just after eclipse exit — elevated voltage · Pmp 129 W"},
 }
 
