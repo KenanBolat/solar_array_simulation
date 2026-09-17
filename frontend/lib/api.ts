@@ -1,5 +1,5 @@
 import type {
-  Alarm, HistoryRow, Measurements, Rack, RunDetail, Run, ScenarioGraph, NodeProps,
+  Alarm, Diagnosis, Health, HistoryRow, Measurements, Rack, RunDetail, Run, ScenarioGraph, NodeProps,
   SasProfile, Summary, Telemetry, Unit, UnitDetail,
 } from "./types";
 
@@ -41,6 +41,8 @@ export const api = {
     j<{ dropped: number; units: { name: string; online: boolean; transport: string; lastError: string | null }[] }>(
       "/api/units/reset-connections", { method: "POST" }),
   rebootUnit: (name: string) => j<{ unit: UnitDetail }>(`/api/units/${name}/reboot`, { method: "POST" }),
+  diagnose: (name: string) => j<Diagnosis>(`/api/units/${name}/diagnose`, { method: "POST" }),
+  health: () => j<Health>("/api/health"),
   refresh: (name: string) => j<{ unit: UnitDetail }>(`/api/units/${name}/refresh`, { method: "POST" }),
   identify: (name: string) => j<{ idn: string }>(`/api/units/${name}/identify`, { method: "POST" }),
   applyProfile: (name: string, profile: string) =>
@@ -79,6 +81,10 @@ export const api = {
   configUnits: () => j<any[]>("/api/config/units"),
   configLimits: () => j<any>("/api/config/limits"),
   configProfiles: () => j<SasProfile[]>("/api/config/profiles"),
+  fleet: () => j<{ file: string; racks: any[]; units: any[] }>("/api/config/fleet"),
+  applyFleet: () =>
+    j<{ file: string; added: string[]; readdressed: string[]; unchanged: string[] }>(
+      "/api/config/fleet/apply", { method: "POST" }),
   rackEditor: (rack = "A") => j<{ slots: any[]; palette: string[] }>(`/api/config/rack-editor?rack=${rack}`),
   assignUnit: (slot: string, unitName: string) =>
     j<{ assign: Record<string, string>; palette: string[] }>("/api/config/rack-editor/assign", {

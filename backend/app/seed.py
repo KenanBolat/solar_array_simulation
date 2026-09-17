@@ -32,6 +32,52 @@ def is_loopback(ip: str) -> bool:
     return ip.startswith("127.") or ip in ("localhost", "::1")
 
 
+def apply_fleet(db) -> dict:
+    """Re-apply the fleet file to an EXISTING database: re-address units that
+    are already there (matched by name), add ones that are missing, leave
+    everything else — measurements, history, alarms, extra units — alone.
+
+    This is the bridge for a database seeded before the fleet file existed (or
+    from a different one): `seed_if_empty` only runs on an empty database, so
+    pulling a new fleet.json otherwise has no effect on units already stored.
+    """
+    from .scpi import close_session
+
+    fleet = load_fleet()
+    for r in fleet["racks"]:
+        rack = db.get(orm.Rack, r["id"])
+        if rack is None:
+            db.add(orm.Rack(id=r["id"], name=r["name"], loc=r.get("loc", ""), cap=int(r.get("cap", 4))))
+
+    added, readdressed, unchanged = [], [], []
+    for spec in fleet["units"]:
+        ip, port = spec.get("ip", ""), int(spec.get("port", 5025))
+        transport, channel = spec.get("transport", "auto"), int(spec.get("channel", 1))
+        u = db.get(orm.Unit, spec["name"])
+        if u is None:
+            db.add(orm.Unit(
+                name=spec["name"], rack_id=spec["rack"], slot=int(spec["slot"]), enabled=spec.get("enabled", True),
+                featured=bool(spec.get("featured", False)), ip_address=ip, mac_address=spec.get("mac", ""),
+                scpi_port=port, transport=transport, channel=channel, visa=visa_address(ip, port, transport),
+                poll_ms=1000, firmware="",
+            ))
+            added.append(spec["name"])
+            continue
+        if (u.ip_address, u.scpi_port, u.transport, u.channel) == (ip, port, transport, channel):
+            unchanged.append(u.name)
+            continue
+        close_session(u.visa)
+        u.ip_address, u.scpi_port, u.transport, u.channel = ip, port, transport, channel
+        u.mac_address = spec.get("mac", u.mac_address)
+        u.visa = visa_address(ip, port, transport)
+        u.online, u.firmware, u.op_mode = False, "", ""
+        u.last_voltage = u.last_current = u.last_power = None
+        u.last_error = "re-addressed from fleet file — awaiting first poll"
+        readdressed.append(u.name)
+    db.commit()
+    return {"file": str(FLEET_FILE), "added": added, "readdressed": readdressed, "unchanged": unchanged}
+
+
 def _hash(name: str) -> int:
     h = 0
     for ch in name:

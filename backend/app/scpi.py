@@ -204,6 +204,22 @@ class Instrument:
                     continue
                 return self._failure(sent, exc, t0)
 
+    # pyvisa-py surfaces some failures as a bare numeric VISA status in the
+    # message text; translate the ones that actually happen on a LAN.
+    _VISA_CODES = {
+        -1073807339: "timed out — no reply from this address",
+        -1073807343: "resource not found — no instrument at this address (VXI-11 not answering?)",
+        -1073807346: "invalid resource reference — the link was dropped",
+        -1073807202: "session already in use by another client",
+    }
+
+    @classmethod
+    def _humanise(cls, msg: str) -> str:
+        for code, text in cls._VISA_CODES.items():
+            if str(code) in msg:
+                return text
+        return msg
+
     @staticmethod
     def _failure(sent: str, exc: Exception, t0: float) -> CommandResult:
         latency = int((time.perf_counter() - t0) * 1000)
@@ -213,6 +229,9 @@ class Instrument:
             msg = exc.description or str(exc)
         else:
             msg = str(exc).strip() or exc.__class__.__name__
+        msg = Instrument._humanise(msg)
+        if "timed out" in msg.lower() or "timeout" in msg.lower():
+            return CommandResult("TIMEOUT", sent, error_msg=msg[:200], latency_ms=latency)
         if "refused" in msg.lower():
             msg += " — instrument up but not accepting another connection? (limited concurrent sessions; close telnet)"
         return CommandResult("UNREACHABLE", sent, error_msg=msg[:200], latency_ms=latency)

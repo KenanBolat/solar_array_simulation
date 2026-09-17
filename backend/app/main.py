@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from . import orm
 from .db import engine, ensure_columns, session_scope
+from .diagnostics import host_addresses
 from .emulator import demo_emulators
 from .poller import telemetry_poller
 from .routers import racks, units, measurements, alarms, history, runs, scenarios, config
@@ -64,4 +65,5 @@ def health():
         n = db.query(orm.Unit).count()
         emulated = sum(1 for u in db.query(orm.Unit).all() if is_loopback(u.ip_address))
     return {"status": "ok", "mode": "live-scpi", "fleetFile": str(FLEET_FILE), "units": n,
-            "emulatedUnits": emulated, "emulators": [e.port for e in EMULATORS] if emulated else []}
+            "emulatedUnits": emulated, "emulators": [e.port for e in EMULATORS] if emulated else [],
+            "host": host_addresses(), "uiPort": 3301}

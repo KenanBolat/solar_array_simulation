@@ -24,6 +24,27 @@ export interface Unit {
   enabled: boolean;
 }
 
+export interface Diagnosis {
+  unit: string;
+  ip: string;
+  transport: string;
+  from: { hostname: string; ips: string[] };
+  checks: { check: string; ok: boolean; detail: string }[];
+  recommend: "vxi11" | "socket" | null;
+  verdict: string;
+}
+
+export interface Health {
+  status: string;
+  mode: string;
+  fleetFile: string;
+  units: number;
+  emulatedUnits: number;
+  emulators: number[];
+  host: { hostname: string; ips: string[] };
+  uiPort: number;
+}
+
 export interface SasProfile {
   name: string;
   voc: number;

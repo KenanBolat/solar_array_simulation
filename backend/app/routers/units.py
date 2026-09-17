@@ -5,6 +5,7 @@ from .. import data, state
 from ..db import get_db
 from ..models import (CreateUnitRequest, ModeRequest, NetworkRequest, OutputRequest, ProfileRequest,
                       SetpointRequest, TerminalExecuteRequest)
+from ..diagnostics import diagnose, host_addresses
 from ..poller import measure_unit, reset_backoff
 from ..scpi import TRANSPORTS, CommandResult, Instrument, close_all_sessions, close_session
 
@@ -199,6 +200,18 @@ def reconnect(name: str, db: Session = Depends(get_db)):
         u.visa = state.derive_visa(u.ip_address, u.scpi_port, resolved)
     state.apply_reading(db, u, result, reading)
     return {"unit": state.unit_to_detail_dict(u), "result": result.describe()}
+
+
+@router.post("/{name}/diagnose")
+def diagnose_unit(name: str, db: Session = Depends(get_db)):
+    """Probe this unit's address from the backend host. The app's own session
+    is closed first so the probe doesn't compete with it for the instrument's
+    single socket slot; the poller reconnects afterwards."""
+    u = _unit_or_404(db, name)
+    close_session(u.visa)
+    report = diagnose(u.ip_address, u.scpi_port, u.channel)
+    report.update({"unit": name, "ip": u.ip_address, "transport": u.transport, "from": host_addresses()})
+    return report
 
 
 @router.post("/{name}/reboot")

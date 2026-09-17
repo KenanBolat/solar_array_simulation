@@ -1,4 +1,5 @@
 "use client";
+import type { Diagnosis } from "@/lib/types";
 import { useState } from "react";
 import { api } from "@/lib/api";
 import { usePoll } from "@/lib/useApi";
@@ -130,6 +131,20 @@ function UnitsConfigTab() {
   const [editPort, setEditPort] = useState("5025");
   const [editTransport, setEditTransport] = useState("vxi11");
   const [editChannel, setEditChannel] = useState("1");
+  const [diag, setDiag] = useState<Record<string, Diagnosis | "running">>({});
+  const { data: health } = usePoll(() => api.health(), 30000);
+
+  const diagnose = async (u: any) => {
+    setDiag((d) => ({ ...d, [u.name]: "running" }));
+    try {
+      const r = await api.diagnose(u.name);
+      setDiag((d) => ({ ...d, [u.name]: r }));
+    } catch (e) {
+      notify(e instanceof Error ? e.message : "Diagnosis failed");
+      setDiag((d) => { const { [u.name]: _, ...rest } = d; return rest; });
+    }
+    reload();
+  };
 
   const rackOptions = (racks ?? []).length ? racks!.map((r) => r.id) : ["A"];
 
@@ -206,6 +221,28 @@ function UnitsConfigTab() {
     reload();
   };
 
+  const applyFleet = () => {
+    ask({
+      title: "Apply fleet file",
+      message: `Re-reads the backend's fleet file and re-addresses the stored units to match it (adding any that are missing). Measurements, command history and alarms are kept. Use this when the units here still point somewhere else — e.g. at the local emulators — after the fleet file changed.`,
+      confirmLabel: "Apply fleet file", danger: false,
+      onConfirm: async () => {
+        try {
+          const r = await api.applyFleet();
+          const parts = [
+            r.readdressed.length ? `re-addressed ${r.readdressed.join(", ")}` : "",
+            r.added.length ? `added ${r.added.join(", ")}` : "",
+            r.unchanged.length ? `${r.unchanged.length} already matching` : "",
+          ].filter(Boolean);
+          notify(parts.length ? parts.join(" · ") : "Nothing to change");
+        } catch (e) {
+          notify(e instanceof Error ? e.message : "Apply failed");
+        }
+        reload();
+      },
+    });
+  };
+
   const rebootUnit = (u: any) => {
     ask({
       title: `Reboot mainframe — ${u.name}`,
@@ -222,17 +259,32 @@ function UnitsConfigTab() {
   return (
     <Panel className="overflow-hidden">
       <div className="flex items-center justify-between border-b border-line px-4 py-3">
-        <div className="text-[13px] font-semibold">Simulator Units</div>
+        <div>
+          <div className="text-[13px] font-semibold">Simulator Units</div>
+          {health && (
+            <div className="mt-0.5 font-mono text-[10px] text-faint">
+              backend on <span className="text-[#cfd6e2]">{health.host.hostname}</span>
+              {health.host.ips.length > 0 && (
+                <> · LAN users open <span className="text-cyan">http://{health.host.ips[0]}:{health.uiPort}</span></>
+              )}
+              {health.emulatedUnits > 0 && (
+                <span className="text-amber"> · {health.emulatedUnits} unit(s) point at the local emulators, not real instruments — use “Apply fleet file”</span>
+              )}
+            </div>
+          )}
+        </div>
         <div className="flex items-center gap-2">
+          <span title="Re-address the stored units from the backend's fleet file"><Btn onClick={applyFleet}>Apply fleet file</Btn></span>
           <span title="Close every instrument session this app holds and re-poll all units now"><Btn onClick={resetAll}>⟲ Reset all connections</Btn></span>
           <Btn variant="primary" onClick={() => setShowForm((s) => !s)}>{showForm ? "Cancel" : "+ Add Simulator Unit"}</Btn>
         </div>
       </div>
-      <div className="grid gap-2.5 border-b border-line px-4 py-2 font-mono text-[9.5px] uppercase tracking-wider text-faint" style={{ gridTemplateColumns: "80px 70px 40px 1fr 60px 130px 160px" }}>
+      <div className="grid gap-2.5 border-b border-line px-4 py-2 font-mono text-[9.5px] uppercase tracking-wider text-faint" style={{ gridTemplateColumns: "80px 70px 40px 1fr 60px 130px 230px" }}>
         <span>Unit</span><span>Rack</span><span>Slot</span><span>Address (IP · transport · channel / MAC)</span><span>Poll</span><span>State</span><span>Actions</span>
       </div>
       {(units ?? []).map((u: any) => (
-        <div key={u.name} className="grid items-center gap-2.5 border-b border-[#161b24] px-4 py-2.5 font-mono text-[11px]" style={{ gridTemplateColumns: "80px 70px 40px 1fr 60px 130px 160px" }}>
+        <div key={u.name} className="border-b border-[#161b24]">
+        <div className="grid items-center gap-2.5 px-4 py-2.5 font-mono text-[11px]" style={{ gridTemplateColumns: "80px 70px 40px 1fr 60px 130px 230px" }}>
           <span className="font-bold">{u.name}</span>
           <span className="text-[#cfd6e2]">{u.rack}</span>
           <span className="text-muted">{u.slot}</span>
@@ -288,6 +340,10 @@ function UnitsConfigTab() {
             <button onClick={() => toggleEnabled(u)} className="rounded border border-line2 bg-panel2 px-2 py-1 font-sans text-[10px] font-semibold text-ink">
               {u.enabled ? "Disable" : "Enable"}
             </button>
+            <button onClick={() => diagnose(u)} disabled={diag[u.name] === "running"} title="Probe this address from the backend host: ports, VXI-11 and socket *IDN?"
+              className="rounded border border-line2 bg-panel2 px-2 py-1 font-sans text-[10px] font-semibold text-ink disabled:opacity-50">
+              {diag[u.name] === "running" ? "Probing…" : "Diagnose"}
+            </button>
             {u.enabled && u.transport !== "auto" && (
               <button onClick={() => rebootUnit(u)} title="SYST:REBoot — drops every session on the mainframe, output OFF, ~30 s"
                 className="rounded border border-amber/40 bg-amber/10 px-2 py-1 font-sans text-[10px] font-semibold text-amber">
@@ -298,6 +354,25 @@ function UnitsConfigTab() {
               Delete
             </button>
           </span>
+        </div>
+        {diag[u.name] && diag[u.name] !== "running" && (() => {
+          const d = diag[u.name] as Diagnosis;
+          return (
+            <div className="mx-4 mb-3 rounded-md border border-line2 bg-bg px-3 py-2.5 font-mono text-[10.5px]">
+              <div className="mb-1.5 flex items-center justify-between">
+                <span className="text-faint">probe of <span className="text-[#cfd6e2]">{d.ip}</span> from <span className="text-[#cfd6e2]">{d.from.hostname}</span> ({d.from.ips.join(", ") || "no LAN IP"})</span>
+                <button onClick={() => setDiag((x) => { const { [u.name]: _, ...rest } = x; return rest; })} className="text-faint hover:text-ink">✕</button>
+              </div>
+              {d.checks.map((c) => (
+                <div key={c.check} className="grid gap-2 py-0.5" style={{ gridTemplateColumns: "190px 1fr" }}>
+                  <span style={{ color: c.ok ? "#34d399" : "#f87171" }}>{c.ok ? "● " : "○ "}{c.check}</span>
+                  <span className="break-all text-[#cfd6e2]">{c.detail}</span>
+                </div>
+              ))}
+              <div className="mt-1.5 border-t border-line pt-1.5 font-sans text-[11px]" style={{ color: d.recommend ? "#34d399" : "#fbbf24" }}>{d.verdict}</div>
+            </div>
+          );
+        })()}
         </div>
       ))}
       {(units ?? []).length === 0 && (

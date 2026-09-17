@@ -138,6 +138,19 @@ when `data.db` is empty. For a no-hardware demo:
 SAS_FLEET_FILE=fleet.emulator.json .venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
+**If the units show the wrong address.** `fleet.json` is read only when `data.db`
+is *empty*, so an existing database keeps whatever its units were addressed at.
+Configuration → Simulator Units shows which host the backend runs on, the URL LAN
+users should open, and a warning when units still point at the local emulators;
+**Apply fleet file** re-addresses the stored units to match `fleet.json` (adding
+missing ones) while keeping measurements, history and alarms.
+
+**Diagnosing one unit.** Its **Diagnose** button probes that address *from the
+backend host* — TCP 5024 / the socket port / 111, then a real `*IDN?` over both
+VXI-11 and the socket — and prints a verdict: which transport to use, or whether
+a session is held, or whether nothing answers at all. (`backend/probe.py <ip>`
+does the same from a shell.)
+
 **Stuck sessions.** Configuration → Simulator Units has **⟲ Reset all connections**
 (drops every session *this app* holds and re-polls at once) and, per unit,
 **Reboot** — `SYSTem:REBoot`, the documented way to make the mainframe drop *every*

@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from .. import data, state
 from ..db import get_db
 from ..models import AssignRequest
+from ..seed import FLEET_FILE, apply_fleet, load_fleet
 
 router = APIRouter(prefix="/api/config", tags=["config"])
 
@@ -26,6 +27,18 @@ def config_limits():
 @router.get("/profiles")
 def config_profiles():
     return [{"name": k, **v} for k, v in data.SAS_PROFILES.items()]
+
+
+@router.get("/fleet")
+def get_fleet():
+    """What the fleet file currently says, so the UI can show whether the
+    stored units still match it."""
+    return {"file": str(FLEET_FILE), **load_fleet()}
+
+
+@router.post("/fleet/apply")
+def apply_fleet_file(db: Session = Depends(get_db)):
+    return apply_fleet(db)
 
 
 @router.get("/rack-editor")
