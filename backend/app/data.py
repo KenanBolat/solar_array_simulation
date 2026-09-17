@@ -4,9 +4,19 @@ graph. Fleet/rack/measurement/history/alarm data now lives in the database
 """
 
 FEATURED_UNIT = "SAS-01"
-FEATURED_VOLTAGE = 28.0
-FEATURED_CURRENT = 4.2
-FEATURED_POWER = 117.6
+
+# SAS-mode I-V curves, applied with the four coupled parameters in one message
+# (CURR:SAS:ISC / CURR:SAS:IMP / VOLT:SAS:VMP / VOLT:SAS:VOC — see scpi.py).
+# Values are for an E4361A module (65 V / 8.7 A) and sit inside the platform's
+# 32 V / 6 A soft limits. Pmp = Vmp x Imp.
+SAS_PROFILES = {
+    "BOL_GEO_28V": {"voc": 32.0, "isc": 4.6, "vmp": 28.0, "imp": 4.2,
+                    "desc": "Beginning-of-life panel, geostationary orbit, 28 V bus · Pmp 117.6 W"},
+    "EOL_LEO_24V": {"voc": 27.5, "isc": 4.1, "vmp": 24.0, "imp": 3.7,
+                    "desc": "End-of-life (degraded) panel, low-earth orbit, 24 V bus · Pmp 88.8 W"},
+    "ECLIPSE_EXIT_COLD": {"voc": 34.5, "isc": 4.7, "vmp": 30.0, "imp": 4.3,
+                          "desc": "Cold panel just after eclipse exit — elevated voltage · Pmp 129 W"},
+}
 
 SCENARIO = {
     "id": "eclipse-cycle-panel-a",
@@ -50,15 +60,18 @@ NODE_PROPS_OVERRIDE = {
         "params": [
             ["Profile", "BOL_GEO_28V"],
             ["Meaning", "Beginning-of-Life, Geostationary orbit, 28 V bus"],
-            ["What it configures", "The I-V curve the array should behave like before Set Voltage/Enable Output run"],
+            ["Voc / Isc", "32.0 V / 4.6 A"],
+            ["Vmp / Imp", "28.0 V / 4.2 A  (Pmp 117.6 W)"],
+            ["SCPI", "CURR:MODE SAS,(@1) then CURR:SAS:ISC 4.6,(@1);IMP 4.2,(@1);:VOLT:SAS:VMP 28,(@1);VOC 32,(@1)"],
         ],
         "delay": "0 ms", "timeout": "2 000 ms", "retry": "0 retries",
         "fail": "Abort scenario",
-        "comments": ("Selects which simulated solar-array I-V curve the unit should present for this run — e.g. "
-                      "a fresh panel at geostationary orbit vs. an aged/degraded or low-earth-orbit curve. It's applied "
-                      "before the voltage/output steps so the rest of the sequence tests against a known array condition. "
-                      "In this build it's logged as a run step (audit trail); it does not yet change the simulated "
-                      "voltage/current math itself — see README for the real-vs-simulated telemetry boundary."),
+        "comments": ("Puts the channel in SAS mode and programs the exponential I-V curve the array should present "
+                      "(open-circuit voltage, short-circuit current, and the peak-power point). All four parameters go "
+                      "in one message so the instrument validates the curve as a whole and rejects it atomically "
+                      "(errors 320-322/328). Note: in SAS mode the operating point is set by the load, so a plain "
+                      "'Set Voltage' step afterwards is rejected with 315 Settings conflict — the scenario runner still "
+                      "walks these steps as a simulated sequence; live per-step dispatch is the next milestone."),
     },
     "thresh": {
         "name": "Threshold Check",
@@ -111,7 +124,7 @@ TERM_CMDS = [
      "summary": "Clear the transcript", "hazardous": False, "act": "clear"},
 ]
 
-FP_MENU = ["Output On/Off", "Set Voltage", "Set Current Limit", "SAS Curve Mode", "Protection Limits", "I/O Configuration"]
+FP_MENU = ["Output On/Off", "Set Voltage", "Set Current Limit", "Mode FIX / SAS", "Clear Protection", "I/O Configuration"]
 
 OPERATIONAL_LIMITS = {
     "max_voltage_v": 32.0,

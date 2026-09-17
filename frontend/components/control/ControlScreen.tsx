@@ -11,7 +11,6 @@ import { TerminalModal } from "./TerminalModal";
 import { FrontPanelModal } from "./FrontPanelModal";
 
 const RANGES = ["5 min", "30 min", "1 hour", "24 hours", "Custom"];
-const PROFILES = ["BOL_GEO_28V", "EOL_LEO_24V", "Eclipse cycle"];
 
 export function ControlScreen({ unitName }: { unitName: string }) {
   const { ask, notify } = useUi();
@@ -20,8 +19,9 @@ export function ControlScreen({ unitName }: { unitName: string }) {
   const [showFrontPanel, setShowFrontPanel] = useState(false);
   const [voltInput, setVoltInput] = useState("28.0");
   const [currInput, setCurrInput] = useState("5.0");
-  const [profile, setProfile] = useState(PROFILES[0]);
+  const [profile, setProfile] = useState("BOL_GEO_28V");
 
+  const { data: profiles } = usePoll(() => api.configProfiles(), 60000);
   const { data: unit, reload: reloadUnit } = usePoll(() => api.unit(unitName), 3000, [unitName]);
   const { data: telemetry, reload: reloadTelemetry } = usePoll(() => api.telemetry(unitName, range), 4000, [unitName, range]);
   const { data: history, reload: reloadHistory } = usePoll(() => api.history("All", 50), 4000, [unitName]);
@@ -34,23 +34,36 @@ export function ControlScreen({ unitName }: { unitName: string }) {
   if (!unit) return <div className="p-5 text-muted">Loading {unitName}…</div>;
 
   const co = unit.output;
+  const ch = `(@${unit.channel})`;
+  const inSas = unit.opMode === "SAS";
+  const nextMode = inSas ? "FIX" : "SAS";
   const statusColor = STATUS_COLOR[unit.statusColor];
   const rows = (history?.rows ?? []).filter((h) => h.dev === unitName).slice(0, 6);
+  const profileNames = profiles?.map((p) => p.name) ?? [profile];
+  const profileDesc = profiles?.find((p) => p.name === profile)?.desc;
+
+  // Every action goes to the instrument and either comes back confirmed (readback)
+  // or fails with the instrument's own SYST:ERR? text / the transport failure.
+  const exec = async (label: string, fn: () => Promise<unknown>) => {
+    try { await fn(); notify(`${label} · OK`); }
+    catch (e) { notify(`${label} · ${e instanceof Error ? e.message : "failed"}`); }
+    finally { reloadAll(); }
+  };
 
   const toggleOutput = () => {
     if (co) {
       ask({
         title: `Disable Output — ${unitName}`,
-        message: `This sets OUTP:STAT OFF on ${unitName}. The simulated array output will drop to 0 V / 0 A. Confirm to send the validated command.`,
+        message: `Sends OUTP OFF,${ch} to ${unitName} and confirms with OUTP?. The array output drops to 0 V / 0 A.`,
         confirmLabel: "Disable Output", danger: true,
-        onConfirm: async () => { await api.setOutput(unitName, false); notify(`Output disabled · ${unitName}`); reloadAll(); },
+        onConfirm: () => exec(`OUTP OFF,${ch}`, () => api.setOutput(unitName, false)),
       });
     } else {
       ask({
         title: `Enable Output — ${unitName}`,
-        message: "This sets OUTP:STAT ON, energising the simulated solar array output at the configured setpoint.",
+        message: `Sends OUTP ON,${ch}, energising the output at the programmed ${inSas ? "SAS curve" : "setpoint"}. Confirmed with OUTP?.`,
         confirmLabel: "Enable Output", danger: false,
-        onConfirm: async () => { await api.setOutput(unitName, true); notify(`Output enabled · ${unitName}`); reloadAll(); },
+        onConfirm: () => exec(`OUTP ON,${ch}`, () => api.setOutput(unitName, true)),
       });
     }
   };
@@ -61,27 +74,38 @@ export function ControlScreen({ unitName }: { unitName: string }) {
     if (!isFinite(v) || !isFinite(c)) { notify("Enter valid numbers for voltage and current"); return; }
     ask({
       title: `Apply Setpoint — ${unitName}`,
-      message: `Set voltage to ${v.toFixed(1)} V and current limit to ${c.toFixed(1)} A. Dispatched as validated commands and logged.`,
+      message: `Sends VOLT ${v},${ch} and CURR ${c},${ch}, each confirmed by readback (VOLT? / CURR?).${inSas ? " The channel is in SAS mode — the instrument will reject these with 315 Settings conflict until it is switched to FIX." : ""}`,
       confirmLabel: "Apply Setpoint", danger: false,
-      onConfirm: async () => { await api.setSetpoint(unitName, { voltage: v, currentLimit: c }); notify(`Setpoint applied · ${unitName}`); reloadAll(); },
+      onConfirm: () => exec("Setpoint", () => api.setSetpoint(unitName, { voltage: v, currentLimit: c })),
     });
   };
 
   const applyProfile = () => {
     ask({
       title: `Apply Profile — ${profile}`,
-      message: `Apply simulator profile "${profile}" to ${unitName}. This overwrites the current I-V curve parameters.`,
+      message: `Puts ${unitName} in SAS mode (CURR:MODE SAS,${ch}) and programs the ${profile} I-V curve — Voc/Isc/Vmp/Imp in one message so the instrument validates the whole curve. ${profileDesc ?? ""}`,
       confirmLabel: "Apply Profile", danger: false,
-      onConfirm: async () => { await api.applyProfile(unitName, profile); notify(`Profile applied · ${profile}`); reloadAll(); },
+      onConfirm: () => exec(`Profile ${profile}`, () => api.applyProfile(unitName, profile)),
+    });
+  };
+
+  const switchMode = () => {
+    ask({
+      title: `Switch to ${nextMode} mode — ${unitName}`,
+      message: nextMode === "FIX"
+        ? `Sends CURR:MODE FIX,${ch}: the output becomes a fixed rectangular V/I characteristic driven by the VOLT/CURR setpoints.`
+        : `Sends CURR:MODE SAS,${ch}: the output follows the programmed solar-array I-V curve; VOLT/CURR setpoints no longer apply.`,
+      confirmLabel: `Set ${nextMode} mode`, danger: false,
+      onConfirm: () => exec(`CURR:MODE ${nextMode},${ch}`, () => api.setMode(unitName, nextMode)),
     });
   };
 
   const doShutdown = () => {
     ask({
       title: `Safe Shutdown — ${unitName}`,
-      message: "Initiates the ramped safe-shutdown sequence: output disabled, current limit reduced to 0, device set to standby. This is a high-risk safety action and will be logged with full traceability.",
+      message: `Sends OUTP OFF,${ch} and confirms the output is de-energised with OUTP?. This is a safety action and is logged with full traceability.`,
       confirmLabel: "Execute Safe Shutdown", danger: true,
-      onConfirm: async () => { await api.shutdown(unitName); notify(`Safe shutdown executed · ${unitName}`); reloadAll(); },
+      onConfirm: () => exec("Safe shutdown", () => api.shutdown(unitName)),
     });
   };
 
@@ -141,19 +165,26 @@ export function ControlScreen({ unitName }: { unitName: string }) {
                 </div>
               </div>
               <Btn variant="primary" onClick={applySetpoint}>Apply Setpoint</Btn>
+              {inSas && (
+                <div className="rounded-md border border-amber/30 bg-amber/[0.06] px-2.5 py-1.5 text-[10.5px] leading-snug text-amber">
+                  Channel is in <b>SAS</b> mode — the operating point follows the I-V curve and the load; VOLT/CURR are rejected (315) until you switch to FIX.
+                </div>
+              )}
               <div>
-                <label className="mb-1 block text-[10px] text-faint">Apply Profile</label>
+                <label className="mb-1 block text-[10px] text-faint">Apply Profile (SAS curve)</label>
                 <div className="flex gap-2">
                   <select value={profile} onChange={(e) => setProfile(e.target.value)}
                     className="w-full rounded-md border border-line2 bg-bg px-2.5 py-1.5 text-[12px] text-ink">
-                    {PROFILES.map((p) => <option key={p}>{p}</option>)}
+                    {profileNames.map((p) => <option key={p}>{p}</option>)}
                   </select>
                   <Btn onClick={applyProfile}>Apply</Btn>
                 </div>
+                {profileDesc && <div className="mt-1 text-[10px] leading-snug text-faint">{profileDesc}</div>}
               </div>
               <div className="flex gap-2">
-                <Btn className="flex-1" onClick={async () => { await api.refresh(unitName); notify(`Measurement refreshed · ${unitName}`); reloadAll(); }}>Refresh</Btn>
-                <Btn className="flex-1" onClick={async () => { const r = await api.identify(unitName); notify(r.idn); }}>Query *IDN?</Btn>
+                <Btn className="flex-1" onClick={() => exec("MEAS:VOLT?/FETC:CURR?", () => api.refresh(unitName))}>Refresh</Btn>
+                <Btn className="flex-1" onClick={async () => { try { const r = await api.identify(unitName); notify(r.idn); } catch (e) { notify(e instanceof Error ? e.message : "identify failed"); } reloadAll(); }}>Query *IDN?</Btn>
+                <Btn className="flex-1" onClick={switchMode}>Mode → {nextMode}</Btn>
               </div>
               <button onClick={doShutdown} className="rounded-md border border-red bg-red/10 py-2.5 text-[12px] font-bold tracking-wide text-red">
                 ⏻ SAFE SHUTDOWN

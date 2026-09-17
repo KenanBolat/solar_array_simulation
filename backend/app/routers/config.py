@@ -23,6 +23,11 @@ def config_limits():
     return data.OPERATIONAL_LIMITS
 
 
+@router.get("/profiles")
+def config_profiles():
+    return [{"name": k, **v} for k, v in data.SAS_PROFILES.items()]
+
+
 @router.get("/rack-editor")
 def rack_editor(rack: str = "A", db: Session = Depends(get_db)):
     return {"slots": state.rack_slots(db, rack), "palette": state.unassigned_units(db, rack)}

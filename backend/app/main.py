@@ -6,12 +6,12 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from . import orm
 from .db import engine, session_scope
+from .emulator import demo_emulators
 from .poller import telemetry_poller
 from .routers import racks, units, measurements, alarms, history, runs, scenarios, config
 from .seed import seed_if_empty
-from .stub_instrument import start_stub_listeners
 
-STUB_PORTS = [5025, 5026]  # matches the seeded demo units' scpi_port
+EMULATORS = demo_emulators()  # 127.0.0.1:5025 and :5026 — the seeded demo units point here
 
 
 @asynccontextmanager
@@ -19,17 +19,17 @@ async def lifespan(app: FastAPI):
     orm.Base.metadata.create_all(engine)
     with session_scope() as db:
         seed_if_empty(db)
-    stub_servers = await start_stub_listeners(STUB_PORTS)
+    servers = [s for s in [await e.serve() for e in EMULATORS] if s]
     task = asyncio.create_task(telemetry_poller())
     try:
         yield
     finally:
         task.cancel()
-        for server in stub_servers:
+        for server in servers:
             server.close()
 
 
-app = FastAPI(title="Solar Array Simulator Control Platform API", version="0.2.0", lifespan=lifespan)
+app = FastAPI(title="Solar Array Simulator Control Platform API", version="0.3.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -46,4 +46,4 @@ for r in (racks.router, units.router, measurements.router, alarms.router,
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "mode": "simulation"}
+    return {"status": "ok", "mode": "live-scpi", "emulators": [e.port for e in EMULATORS]}

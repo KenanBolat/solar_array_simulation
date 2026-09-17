@@ -23,64 +23,104 @@ The design medium is **HTML/CSS/JS** — these are prototypes, not production co
 - `README.md` — this file
 - `chats/` — conversation transcripts (read these!)
 - `project/` — the `Solar Array Simulator Control Platform` project files (HTML prototypes, assets, components)
+- `9018-03618.pdf` — **Keysight Series E4360 Programmer's Reference Guide** (E4360-90902, Ed. 3). Every SCPI
+  mnemonic, parameter form, response format and error code the backend uses is taken from this document.
 
 ---
 
 ## Implementation
 
-The design above has been implemented as a real full-stack application:
+The design above has been implemented as a real full-stack application that
+**controls and reads Keysight E4360-series Solar Array Simulators over SCPI**.
 
-- `backend/` — FastAPI service backed by **SQLite** (`backend/data.db`, created and
-  seeded automatically on first run — see `backend/app/orm.py`/`seed.py`). Units,
-  racks, measurements, command-audit log, alarms, and scenario runs are all real
-  persisted rows; nothing resets on restart. A background poller (`app/poller.py`)
-  runs every second against every *enabled* unit and does two things for real:
-  (1) a genuine TCP connect probe to the unit's `ip_address:scpi_port` — no SCPI
-  sent, just "does anything answer" — which sets `online`, and (2) writes one
-  measurement row per unit: a computed reading if reachable, or an explicit null
-  if not. A de-energised-but-reachable output legitimately reads `0.0`, which is
-  not the same thing as "no reading," and the schema keeps them distinct.
-  Measurement *values* are still simulated (no verified SCPI query syntax exists
-  for this instrument — see below), but reachability is real: if the machine
-  running the backend can't route to the instrument's IP, the unit correctly
-  shows unreachable and every field goes null, exactly like a real outage would.
-  Default seed topology is a single RACK-A with two units: **SAS-01** (active,
-  output on) and **SAS-02** (standby, output off). Units are addressed by
-  **IP + MAC** (+ a configurable SCPI port, default `5025` — unconfirmed for
-  this instrument); the VISA resource string (`TCPIP0::<ip>::inst0::INSTR`) is
-  derived automatically and isn't user-facing. Units can be added, deleted,
-  enabled/disabled, and had their network info edited from Configuration →
-  Simulator Units. No real SCPI driver — measurement retrieval is a simulation
-  only, by design (see the handoff conversation in `chats/`); the attached
-  E4360 manual turned out to be the Service Guide, not the Programming Guide,
-  so it doesn't cover LAN/SCPI addressing — that's needed before real
-  measurement commands can be added.
+### How a command travels
 
-  **About the seeded IPs.** SAS-01/SAS-02 ship pointed at `127.0.0.1:5025` /
-  `127.0.0.1:5026` — a tiny local TCP listener (`app/stub_instrument.py`,
-  started by the backend on boot) that exists solely so the *real*
-  reachability probe has something genuine to connect to out of the box. It
-  doesn't speak SCPI or anything else; it only accepts the TCP handshake.
-  This isn't a fake reachability signal — the socket connection really
-  happens — it's just a stand-in target instead of the physical instruments.
-  Their real MACs (`80-09-02-05-6A-48` / `80-09-02-08-16-C4`) are kept as
-  labels. Once you're running the backend on a host with LAN access to the
-  actual E4360A units, repoint each one's IP (and port, if different) at the
-  real device from Configuration → Simulator Units — from that point on,
-  reachability and the online/offline state reflect the real instrument, not
-  the stub.
-- `frontend/` — Next.js (App Router) + TypeScript + Tailwind app implementing all
-  nine screens from the wireframe: Intro, Rack Overview, Simulator Control (with
-  Virtual Front Panel and guided Command Terminal modals), Measurements, Scenario
-  Runs, Command History, Alarms, Configuration (incl. drag-and-drop rack editor),
-  and the Scenario Builder canvas.
+```
+Browser (front panel / safe controls / terminal / scenario)
+  │  HTTP POST, JSON            e.g. POST /api/units/SAS-01/setpoint {"voltage": 12}
+  ▼
+FastAPI  backend/app/routers/units.py
+  │  builds the documented program message for that unit's channel
+  ▼
+backend/app/scpi.py  (pyvisa, pure-python backend)
+  │  VOLT 12,(@1)                       ← the command
+  │  *OPC?            → 1               ← wait until the instrument has finished
+  │  SYST:ERR?        → +0,"No error"   ← did it accept it? (drains the FIFO; first error wins)
+  │  VOLT? (@1)       → +1.200000E+01   ← readback, compared with what was commanded
+  ▼
+CommandHistoryRow: status OK | ERR | UNREACHABLE | TIMEOUT, latency, the exact SCPI text,
+the response, and the instrument's error code/message when it refused. Only after OK is
+the unit row updated — the instrument is the source of truth, the database is a mirror.
+```
+
+Every second the poller (`app/poller.py`) asks each *enabled* unit
+`MEAS:VOLT? (@n);:FETC:CURR? (@n);:OUTP? (@n);:CURR:MODE? (@n);:STAT:QUES:COND? (@n)`
+(one round trip: a fresh V/I acquisition, output state, operating mode, protection
+status) and, in FIXed mode, `VOLT? (@n);:CURR? (@n)`. Whatever comes back overwrites
+the cached unit state — so if someone changes the instrument from its physical front
+panel, the web UI follows within a second. No valid reply → the unit is *unreachable*,
+its readings are **null** (never a made-up number), and any command to it is logged
+`UNREACHABLE` and rejected. A reachable, de-energised output legitimately reads `0.0`,
+which is a different thing, and the schema keeps them distinct. Protection bits from
+`STAT:QUES:COND?` (OV, OC, OT, PF, …) raise alarms when they latch and retire them
+when they clear; `OUTP:PROT:CLE (@n)` is available from the front-panel menu.
+
+**Testing the backend directly** (it's plain JSON over HTTP; Swagger UI at
+`http://localhost:8000/docs`):
+
+```bash
+curl -X POST localhost:8000/api/units/SAS-01/setpoint -H 'Content-Type: application/json' -d '{"voltage": 12}'
+curl -X POST localhost:8000/api/units/SAS-01/mode     -H 'Content-Type: application/json' -d '{"mode": "SAS"}'
+curl -X POST localhost:8000/api/units/SAS-01/setpoint -H 'Content-Type: application/json' -d '{"voltage": 20}'
+#  → 502 {"detail":"set_voltage · rejected by instrument · 315,\"Settings conflict error\" · corr CMD-9F0B"}
+curl 'localhost:8000/api/history?filter=All&limit=5'   # the audit rows, with scpi / resp / errCode / err
+```
+
+### Units, channels and transports
+
+A **unit** is one output channel (`(@1)` or `(@2)`) of one E4360 mainframe at one IP.
+Units are configured from Configuration → Simulator Units (add / delete / enable /
+disable / edit addressing) with:
+
+- **IP address** — the mainframe's LAN address.
+- **Transport** — `vxi11` (default): VISA `TCPIP0::<ip>::INSTR`, the LAN interface the
+  Programmer's Reference documents. `socket`: the same SCPI over a plain TCP port
+  (`TCPIP0::<ip>::<port>::SOCKET`). A fixed SCPI socket port is **not** documented in
+  this guide, so only choose it if your instrument's LAN configuration page confirms it.
+- **Port** — used by the socket transport only.
+- **Channel** — 1 or 2.
+- **MAC address** — a label for your inventory; not used for communication.
+
+Platform-level soft limits (32 V / 6 A, `data.OPERATIONAL_LIMITS`) are enforced before a
+command is sent; the instrument enforces its own module ratings on top.
+
+### Operating modes and "Apply Solar Profile"
+
+`CURR:MODE FIX|SAS,(@n)` selects how the channel behaves. In **FIX** mode the output is
+a fixed rectangular V/I characteristic set by `VOLT`/`CURR`. In **SAS** mode it follows
+an exponential solar-array I-V curve programmed by four coupled parameters — the
+platform sends them in one message so the instrument validates the curve as a whole:
+`CURR:SAS:ISC 4.6,(@1);IMP 4.2,(@1);:VOLT:SAS:VMP 28,(@1);VOC 32,(@1)`. In SAS mode a
+plain `VOLT`/`CURR` is rejected with `315 Settings conflict error` — the UI warns about
+this and the rejection is shown verbatim. Profiles live in `data.SAS_PROFILES`.
+
+### Bundled emulators (no hardware needed)
+
+`backend/app/emulator.py` is a software E4360 mainframe: it parses the same bytes the
+driver would send to a physical unit — channel lists, implied header paths in compound
+messages, long/short mnemonics, `*OPC?`, the `SYST:ERR?` FIFO with the guide's error
+codes — and answers in the same formats, with FIX/SAS physics against a resistive load
+and OVP/OCP latching into `STAT:QUES:COND?`. Two instances start with the backend on
+`127.0.0.1:5025` / `:5026`; the seeded units **SAS-01** and **SAS-02** point at them
+(transport `socket`). To drive your physical units, edit each unit's IP and switch the
+transport to `vxi11` in Configuration — the driver code path is identical.
 
 ### Run it
 
 ```bash
 # backend (http://localhost:8000)
 cd backend
-python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt   # includes pyvisa + pyvisa-py
 .venv/bin/python -m uvicorn app.main:app --port 8000
 
 # frontend (http://localhost:3301) — proxies /api/* to the backend above
@@ -91,13 +131,24 @@ npm run dev
 
 Then open http://localhost:3301.
 
-If you already have a `backend/data.db` from before this change, delete it —
-the schema changed (new columns, nullable measurements) and there's no
-migration system yet:
+If you already have a `backend/data.db` from an earlier version, delete it — the schema
+changed (channel/transport columns, mirrored instrument state, richer audit rows) and
+there's no migration system yet:
 
 ```bash
-rm backend/data.db   # fresh schema + seed (real IPs/MACs) on next start
+rm backend/data.db   # fresh schema + seed on next start
 ```
+
+### What is still simulated
+
+- The **scenario runner** walks the Eclipse Cycle steps as a timed sequence and records
+  events, but does not yet dispatch each step to the instrument. Note the sample
+  scenario's "Set Voltage" step is only valid in FIX mode — after "Apply Solar Profile"
+  (SAS mode) a real instrument would answer 315; the step order needs revisiting before
+  live per-step dispatch.
+- The 24 h of measurement history seeded on first start is synthetic (so charts aren't
+  empty); everything from that moment on is real polled data.
+- Save / Validate / Dry Run in the Scenario Builder are placeholders.
 
 ### Offline
 

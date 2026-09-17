@@ -14,23 +14,38 @@ class Rack(Base):
 
 
 class Unit(Base):
+    """One output channel of one E4360 mainframe. Everything under "mirrored
+    from the instrument" is overwritten by the poller every second from what
+    the instrument itself reports — the instrument is the source of truth,
+    the row is a cache of its last known state."""
     __tablename__ = "units"
     name = Column(String, primary_key=True)
     rack_id = Column(String, ForeignKey("racks.id"), nullable=False)
     slot = Column(Integer, nullable=False)
     enabled = Column(Boolean, nullable=False, default=True)   # administrative: included in the fleet at all
-    online = Column(Boolean, nullable=False, default=True)    # comms/connection state
-    output = Column(Boolean, nullable=False, default=False)   # energised or not
-    alarm = Column(String, nullable=False, default="normal")  # normal | warning | offline
-    voltage_setpoint = Column(Float, nullable=False, default=28.0)
-    current_limit = Column(Float, nullable=False, default=5.0)
-    ip_address = Column(String, nullable=False, default="")
-    mac_address = Column(String, nullable=False, default="")
-    scpi_port = Column(Integer, nullable=False, default=5025)  # reachability probe port — not confirmed against the E4360 Programming Guide, adjust if wrong
-    visa = Column(String, nullable=False, default="")  # derived from ip_address — not user-facing
-    poll_ms = Column(Integer, nullable=False, default=500)
-    firmware = Column(String, nullable=False, default="E4360A · v3.1.2")
     featured = Column(Boolean, nullable=False, default=False)
+
+    # addressing
+    ip_address = Column(String, nullable=False, default="")
+    mac_address = Column(String, nullable=False, default="")   # label only — not used for communication
+    scpi_port = Column(Integer, nullable=False, default=5025)  # used by the "socket" transport only
+    transport = Column(String, nullable=False, default="vxi11")  # vxi11 (documented) | socket (opt-in)
+    channel = Column(Integer, nullable=False, default=1)       # (@n) channel list suffix
+    visa = Column(String, nullable=False, default="")          # derived VISA resource string
+    poll_ms = Column(Integer, nullable=False, default=1000)
+    firmware = Column(String, nullable=False, default="")
+
+    # mirrored from the instrument
+    online = Column(Boolean, nullable=False, default=False)    # last poll got a valid SCPI reply
+    output = Column(Boolean, nullable=False, default=False)    # OUTP?
+    op_mode = Column(String, nullable=False, default="")       # CURR:MODE? -> FIX | SAS | TABL
+    voltage_setpoint = Column(Float, nullable=False, default=0.0)  # VOLT? (FIXed mode)
+    current_limit = Column(Float, nullable=False, default=0.0)     # CURR? (FIXed mode)
+    questionable = Column(Integer, nullable=False, default=0)  # STAT:QUES:COND? bit field
+    alarm = Column(String, nullable=False, default="normal")   # normal | warning | offline
+    last_voltage = Column(Float, nullable=True)                # MEAS:VOLT? — null when comms are down
+    last_current = Column(Float, nullable=True)
+    last_power = Column(Float, nullable=True)
 
     rack = relationship("Rack", back_populates="units")
 
@@ -48,16 +63,22 @@ class Measurement(Base):
 
 
 class CommandHistoryRow(Base):
+    """Append-only audit log. One row per command actually dispatched to an
+    instrument, with the exact SCPI text, what came back, and how it ended."""
     __tablename__ = "command_history"
     id = Column(Integer, primary_key=True, autoincrement=True)
     ts = Column(DateTime, nullable=False, index=True)
     user = Column(String, nullable=False)
     device = Column(String, nullable=False)
     template = Column(String, nullable=False)
-    status = Column(String, nullable=False)  # OK | WARN | ERR
+    status = Column(String, nullable=False)          # OK | ERR | UNREACHABLE | TIMEOUT
     latency_ms = Column(Integer, nullable=False, default=0)
-    readback = Column(Boolean, nullable=False, default=False)
+    readback = Column(Boolean, nullable=False, default=False)  # readback query confirmed the commanded value
     correlation_id = Column(String, nullable=False)
+    scpi = Column(String, nullable=False, default="")          # exact program message sent
+    response = Column(String, nullable=False, default="")      # readback / query response
+    error_code = Column(Integer, nullable=True)                # from SYST:ERR? when the instrument rejected it
+    error_msg = Column(String, nullable=False, default="")
 
 
 class AlarmRow(Base):

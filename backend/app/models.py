@@ -15,6 +15,10 @@ class ProfileRequest(BaseModel):
     profile: str
 
 
+class ModeRequest(BaseModel):
+    mode: str  # FIX | SAS
+
+
 class AckRequest(BaseModel):
     pass
 
@@ -37,10 +41,14 @@ class CreateUnitRequest(BaseModel):
     ipAddress: Optional[str] = None
     macAddress: Optional[str] = None
     scpiPort: int = 5025
-    pollMs: int = 500
+    transport: str = "vxi11"
+    channel: int = 1
+    pollMs: int = 1000
 
 
 class NetworkRequest(BaseModel):
     ipAddress: Optional[str] = None
     macAddress: Optional[str] = None
     scpiPort: Optional[int] = None
+    transport: Optional[str] = None
+    channel: Optional[int] = None

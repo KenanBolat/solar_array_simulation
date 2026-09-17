@@ -121,11 +121,15 @@ function UnitsConfigTab() {
   const [ip, setIp] = useState("");
   const [mac, setMac] = useState("");
   const [port, setPort] = useState("5025");
+  const [transport, setTransport] = useState("vxi11");
+  const [channel, setChannel] = useState("1");
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
   const [editIp, setEditIp] = useState("");
   const [editMac, setEditMac] = useState("");
   const [editPort, setEditPort] = useState("5025");
+  const [editTransport, setEditTransport] = useState("vxi11");
+  const [editChannel, setEditChannel] = useState("1");
 
   const rackOptions = (racks ?? []).length ? racks!.map((r) => r.id) : ["A"];
 
@@ -136,10 +140,10 @@ function UnitsConfigTab() {
     try {
       await api.createUnit({
         name: trimmed, rack, ipAddress: ip.trim() || undefined, macAddress: mac.trim() || undefined,
-        scpiPort: port.trim() ? Number(port) : undefined,
+        scpiPort: port.trim() ? Number(port) : undefined, transport, channel: Number(channel),
       });
       notify(`Added ${trimmed}`);
-      setName(""); setIp(""); setMac(""); setPort("5025"); setShowForm(false);
+      setName(""); setIp(""); setMac(""); setPort("5025"); setTransport("vxi11"); setChannel("1"); setShowForm(false);
       reload();
     } catch (e) {
       notify(e instanceof Error ? e.message : "Failed to add unit");
@@ -168,13 +172,28 @@ function UnitsConfigTab() {
     });
   };
 
-  const startEdit = (u: any) => { setEditing(u.name); setEditIp(u.ipAddress); setEditMac(u.macAddress); setEditPort(String(u.scpiPort)); };
-  const saveEdit = async (name: string) => {
-    await api.updateNetwork(name, { ipAddress: editIp.trim(), macAddress: editMac.trim(), scpiPort: editPort.trim() ? Number(editPort) : undefined });
-    notify(`Updated network config · ${name}`);
-    setEditing(null);
-    reload();
+  const startEdit = (u: any) => {
+    setEditing(u.name); setEditIp(u.ipAddress); setEditMac(u.macAddress); setEditPort(String(u.scpiPort));
+    setEditTransport(u.transport ?? "vxi11"); setEditChannel(String(u.channel ?? 1));
   };
+  const saveEdit = async (name: string) => {
+    try {
+      await api.updateNetwork(name, {
+        ipAddress: editIp.trim(), macAddress: editMac.trim(), scpiPort: editPort.trim() ? Number(editPort) : undefined,
+        transport: editTransport, channel: Number(editChannel),
+      });
+      notify(`Updated addressing · ${name} — re-polling`);
+      setEditing(null);
+      reload();
+    } catch (e) {
+      notify(e instanceof Error ? e.message : "Failed to update");
+    }
+  };
+
+  const describeAddress = (u: any) =>
+    u.ipAddress
+      ? `${u.ipAddress}${u.transport === "socket" ? ":" + u.scpiPort : ""} · ${u.transport === "socket" ? "socket" : "VXI-11"} · (@${u.channel ?? 1})`
+      : "no IP set";
 
   return (
     <Panel className="overflow-hidden">
@@ -183,7 +202,7 @@ function UnitsConfigTab() {
         <Btn variant="primary" onClick={() => setShowForm((s) => !s)}>{showForm ? "Cancel" : "+ Add Simulator Unit"}</Btn>
       </div>
       <div className="grid gap-2.5 border-b border-line px-4 py-2 font-mono text-[9.5px] uppercase tracking-wider text-faint" style={{ gridTemplateColumns: "80px 70px 40px 1fr 60px 130px 160px" }}>
-        <span>Unit</span><span>Rack</span><span>Slot</span><span>Network (IP / MAC)</span><span>Poll</span><span>State</span><span>Actions</span>
+        <span>Unit</span><span>Rack</span><span>Slot</span><span>Address (IP · transport · channel / MAC)</span><span>Poll</span><span>State</span><span>Actions</span>
       </div>
       {(units ?? []).map((u: any) => (
         <div key={u.name} className="grid items-center gap-2.5 border-b border-[#161b24] px-4 py-2.5 font-mono text-[11px]" style={{ gridTemplateColumns: "80px 70px 40px 1fr 60px 130px 160px" }}>
@@ -194,17 +213,29 @@ function UnitsConfigTab() {
             <span className="flex items-center gap-1.5">
               <input value={editIp} onChange={(e) => setEditIp(e.target.value)} placeholder="IP address"
                 className="w-[110px] rounded border border-line2 bg-bg px-1.5 py-1 font-mono text-[10.5px] text-ink" />
-              <input value={editPort} onChange={(e) => setEditPort(e.target.value)} placeholder="port"
-                className="w-[52px] rounded border border-line2 bg-bg px-1.5 py-1 font-mono text-[10.5px] text-ink" />
+              <select value={editTransport} onChange={(e) => setEditTransport(e.target.value)}
+                className="rounded border border-line2 bg-bg px-1 py-1 font-mono text-[10.5px] text-ink">
+                <option value="vxi11">VXI-11</option>
+                <option value="socket">socket</option>
+              </select>
+              {editTransport === "socket" && (
+                <input value={editPort} onChange={(e) => setEditPort(e.target.value)} placeholder="port"
+                  className="w-[52px] rounded border border-line2 bg-bg px-1.5 py-1 font-mono text-[10.5px] text-ink" />
+              )}
+              <select value={editChannel} onChange={(e) => setEditChannel(e.target.value)} title="output channel (@n)"
+                className="rounded border border-line2 bg-bg px-1 py-1 font-mono text-[10.5px] text-ink">
+                <option value="1">(@1)</option>
+                <option value="2">(@2)</option>
+              </select>
               <input value={editMac} onChange={(e) => setEditMac(e.target.value)} placeholder="MAC address"
-                className="w-[140px] rounded border border-line2 bg-bg px-1.5 py-1 font-mono text-[10.5px] text-ink" />
+                className="w-[120px] rounded border border-line2 bg-bg px-1.5 py-1 font-mono text-[10.5px] text-ink" />
               <button onClick={() => saveEdit(u.name)} className="rounded border border-cyan/50 bg-cyan/10 px-2 py-1 font-sans text-[10px] font-semibold text-cyan">Save</button>
               <button onClick={() => setEditing(null)} className="rounded border border-line2 bg-panel2 px-2 py-1 font-sans text-[10px] font-semibold text-ink">Cancel</button>
             </span>
           ) : (
-            <span className="flex min-w-0 flex-col cursor-pointer" onClick={() => startEdit(u)} title="Click to edit — reachability is probed on this IP:port every second">
-              <span className="truncate text-[10.5px] text-[#cfd6e2]">{u.ipAddress ? `${u.ipAddress}:${u.scpiPort}` : "no IP set"}</span>
-              <span className="truncate text-[9.5px] text-faint">{u.macAddress || "no MAC set"}</span>
+            <span className="flex min-w-0 flex-col cursor-pointer" onClick={() => startEdit(u)} title="Click to edit — the instrument is queried over SCPI at this address every second">
+              <span className="truncate text-[10.5px] text-[#cfd6e2]">{describeAddress(u)}</span>
+              <span className="truncate text-[9.5px] text-faint">{u.macAddress || "no MAC set"}{u.opMode ? ` · mode ${u.opMode}` : ""}</span>
             </span>
           )}
           <span className="text-muted">{u.poll}</span>
@@ -233,7 +264,7 @@ function UnitsConfigTab() {
       {showForm && (
         <div className="border-t border-line px-4 py-3.5">
           <div className="mb-2.5 text-[11px] text-muted">New unit</div>
-          <div className="grid grid-cols-6 gap-2.5">
+          <div className="grid grid-cols-8 gap-2.5">
             <div>
               <label className="mb-1 block text-[10px] text-faint">Unit Name</label>
               <input value={name} onChange={(e) => setName(e.target.value)} placeholder="SAS-03"
@@ -252,9 +283,25 @@ function UnitsConfigTab() {
                 className="w-full rounded-md border border-line2 bg-bg px-2.5 py-2 font-mono text-[12px] text-ink" />
             </div>
             <div>
-              <label className="mb-1 block text-[10px] text-faint">Port</label>
-              <input value={port} onChange={(e) => setPort(e.target.value)} placeholder="5025"
-                className="w-full rounded-md border border-line2 bg-bg px-2.5 py-2 font-mono text-[12px] text-ink" />
+              <label className="mb-1 block text-[10px] text-faint">Transport</label>
+              <select value={transport} onChange={(e) => setTransport(e.target.value)}
+                className="w-full rounded-md border border-line2 bg-bg px-2.5 py-2 text-[12px] text-ink">
+                <option value="vxi11">VXI-11 (documented)</option>
+                <option value="socket">Raw socket</option>
+              </select>
+            </div>
+            <div>
+              <label className="mb-1 block text-[10px] text-faint">Port {transport === "vxi11" && <span className="text-faint/60">(socket only)</span>}</label>
+              <input value={port} onChange={(e) => setPort(e.target.value)} placeholder="5025" disabled={transport === "vxi11"}
+                className="w-full rounded-md border border-line2 bg-bg px-2.5 py-2 font-mono text-[12px] text-ink disabled:opacity-40" />
+            </div>
+            <div>
+              <label className="mb-1 block text-[10px] text-faint">Channel</label>
+              <select value={channel} onChange={(e) => setChannel(e.target.value)}
+                className="w-full rounded-md border border-line2 bg-bg px-2.5 py-2 font-mono text-[12px] text-ink">
+                <option value="1">(@1)</option>
+                <option value="2">(@2)</option>
+              </select>
             </div>
             <div>
               <label className="mb-1 block text-[10px] text-faint">MAC Address</label>
@@ -265,8 +312,11 @@ function UnitsConfigTab() {
               <Btn variant="primary" className="w-full" disabled={busy} onClick={addUnit}>Create Unit</Btn>
             </div>
           </div>
-          <div className="mt-2 text-[10px] text-faint">
-            Port defaults to 5025 (common Keysight SCPI-over-socket port) — not confirmed for the E4360A specifically. Reachability is a real TCP connect probe against IP:port every second; no SCPI is sent.
+          <div className="mt-2 text-[10px] leading-relaxed text-faint">
+            A unit is one output channel <span className="font-mono">(@1)</span> or <span className="font-mono">(@2)</span> of one E4360 mainframe at this IP.
+            <b className="text-[#cfd6e2]"> VXI-11</b> is the LAN interface the E4360 Programmer&apos;s Reference documents (<span className="font-mono">TCPIP0::&lt;ip&gt;::INSTR</span>).
+            <b className="text-[#cfd6e2]"> Raw socket</b> sends the same SCPI over a plain TCP port — only pick it if your instrument&apos;s LAN page confirms the port; it&apos;s what the bundled emulators on 127.0.0.1 use.
+            The MAC is a label only. Every second the unit is asked <span className="font-mono">MEAS:VOLT?</span> / <span className="font-mono">FETC:CURR?</span> / <span className="font-mono">OUTP?</span> / <span className="font-mono">CURR:MODE?</span> / <span className="font-mono">STAT:QUES:COND?</span>; no valid reply means unreachable and a null sample.
           </div>
         </div>
       )}

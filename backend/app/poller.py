@@ -3,38 +3,45 @@ import logging
 
 from . import orm, state
 from .db import session_scope
-from .driver import check_reachable
+from .scpi import Instrument
 
 POLL_INTERVAL_S = 1.0
 
 
 async def telemetry_poller():
-    """Every second: real TCP-reachability probe against every *enabled*
-    unit's IP:port (concurrently, so N units cost ~one timeout, not N), then
-    one measurement row per unit — a real reading if reachable, an explicit
-    null if not. A disabled unit isn't probed or polled at all."""
+    """Every second, ask each *enabled* unit's instrument for its live state
+    (`MEAS:VOLT?`/`FETC:CURR?`/`OUTP?`/`CURR:MODE?`/`STAT:QUES:COND?` in one
+    message — see scpi.Instrument.measure) and mirror the answer into the
+    unit row plus one measurement row. No valid reply means the unit is
+    offline and the sample is an explicit null — never a made-up number.
+    Units are polled concurrently so N units cost ~one round trip, not N."""
     while True:
         await asyncio.sleep(POLL_INTERVAL_S)
         try:
             with session_scope() as db:
-                targets = [(u.name, u.ip_address, u.scpi_port)
+                targets = [(u.name, Instrument.for_unit(u))
                            for u in db.query(orm.Unit).filter(orm.Unit.enabled.is_(True)).all()]
-
             if not targets:
                 continue
 
-            results = await asyncio.gather(
-                *[asyncio.to_thread(check_reachable, ip, port) for _, ip, port in targets]
-            )
+            results = await asyncio.gather(*[asyncio.to_thread(inst.measure) for _, inst in targets])
 
+            need_idn = []
             with session_scope() as db:
-                for (name, _, _), reachable in zip(targets, results):
+                for (name, inst), (result, reading) in zip(targets, results):
                     u = db.get(orm.Unit, name)
                     if not u or not u.enabled:
-                        continue  # disabled between the probe and now — drop the sample
-                    u.online = reachable
-                    v, i, p = state.unit_live_values(u)
-                    state.record_measurement(db, u.name, v, i, p, reachable=reachable)
+                        continue  # disabled between the poll and now — drop the sample
+                    state.apply_reading(db, u, result, reading)
+                    if result.ok and not u.firmware:
+                        need_idn.append((name, inst))
+
+            if need_idn:  # first contact: learn mainframe model / serial / firmware and the module in this channel
+                idns = await asyncio.gather(*[asyncio.to_thread(inst.identify) for _, inst in need_idn])
+                with session_scope() as db:
+                    for (name, _), res in zip(need_idn, idns):
+                        u = db.get(orm.Unit, name)
+                        if u and res.ok and res.response:
+                            u.firmware = state.describe_identity(res.response)
         except Exception:
-            # A poll failure shouldn't kill the background loop — log and retry next tick.
             logging.getLogger(__name__).exception("telemetry poll failed")

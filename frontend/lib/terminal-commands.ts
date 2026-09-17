@@ -6,9 +6,9 @@ import type { TerminalCommand } from "./types";
 export const TERM_CMDS: TerminalCommand[] = [
   { name: "open", aliases: ["open", "on", "enable", "enable output", "output on"], summary: "Enable the output — energises the array", effect: "output ON — array energised", hazardous: true, act: "on" },
   { name: "close", aliases: ["close", "off", "disable", "disable output", "output off"], summary: "Disable the output — de-energises the array", effect: "output OFF — array de-energised", hazardous: false, act: "off" },
-  { name: "read", aliases: ["read current measurements", "read measurements", "read", "measure", "meas"], summary: "Read voltage, current and power now", hazardous: false, act: "read" },
-  { name: "status", aliases: ["status", "state"], summary: "Show cached device status without querying", hazardous: false, act: "status" },
-  { name: "identify", aliases: ["identify", "id", "whoami"], summary: "Ask the instrument to identify itself", hazardous: false, act: "idn" },
+  { name: "read", aliases: ["read current measurements", "read measurements", "read", "measure", "meas"], summary: "MEAS:VOLT? / FETC:CURR? — fresh V, I and P from the instrument", hazardous: false, act: "read" },
+  { name: "status", aliases: ["status", "state"], summary: "OUTP? · CURR:MODE? · setpoints · STAT:QUES:COND? (protection)", hazardous: false, act: "status" },
+  { name: "identify", aliases: ["identify", "id", "whoami"], summary: "*IDN? — mainframe model, serial, firmware and this channel's module", hazardous: false, act: "idn" },
   { name: "set voltage", aliases: ["set voltage", "voltage", "volt", "v"], summary: "Set the programmed output voltage", usage: "set voltage 28.0", hazardous: true, act: "setv", unit: "V", max: 32 },
   { name: "set current", aliases: ["set current limit", "set current", "current", "curr", "i"], summary: "Set the programmed current limit", usage: "set current 4.5", hazardous: true, act: "seti", unit: "A", max: 6 },
   { name: "shutdown", aliases: ["shutdown", "safe shutdown", "stop"], summary: "Disable output and bring the unit to a safe state", effect: "safe shutdown — output disabled, unit to standby", hazardous: true, act: "shutdown" },

@@ -15,8 +15,21 @@ export interface Unit {
   power: number | null;
   voltageSetpoint: number;
   currentLimit: number;
+  opMode: "FIX" | "SAS" | "TABL" | null;
+  questionable: number;
+  channel: number;
+  transport: "vxi11" | "socket";
   featured: boolean;
   enabled: boolean;
+}
+
+export interface SasProfile {
+  name: string;
+  voc: number;
+  isc: number;
+  vmp: number;
+  imp: number;
+  desc: string;
 }
 
 export interface UnitDetail extends Unit {
@@ -67,10 +80,14 @@ export interface HistoryRow {
   user: string;
   dev: string;
   tpl: string;
-  st: "OK" | "WARN" | "ERR";
+  st: "OK" | "ERR" | "UNREACHABLE" | "TIMEOUT" | string;
   lat: string;
   rb: boolean;
   cid: string;
+  scpi: string;
+  resp: string;
+  errCode: number | null;
+  err: string;
 }
 
 export interface RunEvent {

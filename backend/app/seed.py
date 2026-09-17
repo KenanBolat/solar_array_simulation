@@ -4,10 +4,17 @@ import math
 from datetime import datetime, timedelta, timezone
 
 from . import orm
-from .driver import name_hash
+from .scpi import visa_address
 
 ACTIVE_UNIT = "SAS-01"
 STANDBY_UNIT = "SAS-02"
+
+
+def _hash(name: str) -> int:
+    h = 0
+    for ch in name:
+        h = (h * 31 + ord(ch)) % 997
+    return h
 
 
 def seed_if_empty(db):
@@ -17,33 +24,31 @@ def seed_if_empty(db):
     rack = orm.Rack(id="A", name="RACK-A", loc="Lab 2 · Bay 1", cap=4)
     db.add(rack)
 
-    # IP/port default to the local stub listener (see stub_instrument.py) so the
-    # real TCP reachability probe has something genuine to connect to out of
-    # the box. These are demo stand-ins, not the physical units' addresses —
-    # once you're running the app on a host with LAN access to the real E4360A
-    # instruments, repoint each unit's IP/MAC at them from Configuration →
-    # Simulator Units (their real MACs are kept below for reference/labeling).
+    # Both demo units address the bundled E4360 emulators (emulator.py) over
+    # the raw-socket transport, so every command the app sends is real SCPI
+    # parsed by a real (software) instrument. To drive the physical units,
+    # repoint each row's IP at the real mainframe and switch the transport to
+    # "vxi11" (the documented LAN interface) from Configuration → Simulator
+    # Units. Their real MACs are kept below as labels. Everything under the
+    # "mirrored" columns (online/output/mode/setpoints/readings) is populated
+    # by the first poll — nothing is assumed about the instrument's state.
     db.add(orm.Unit(
-        name=ACTIVE_UNIT, rack_id="A", slot=1, enabled=True, online=True, output=True,
-        alarm="normal", voltage_setpoint=28.0, current_limit=5.0,
-        ip_address="127.0.0.1", mac_address="80-09-02-05-6A-48", scpi_port=5025,
-        visa="TCPIP0::127.0.0.1::inst0::INSTR", poll_ms=500,
-        firmware="E4360A · v3.1.2", featured=True,
+        name=ACTIVE_UNIT, rack_id="A", slot=1, enabled=True, featured=True,
+        ip_address="127.0.0.1", mac_address="80-09-02-05-6A-48", scpi_port=5025, transport="socket", channel=1,
+        visa=visa_address("127.0.0.1", 5025, "socket"), poll_ms=1000, firmware="",
     ))
     db.add(orm.Unit(
-        name=STANDBY_UNIT, rack_id="A", slot=2, enabled=True, online=True, output=False,
-        alarm="normal", voltage_setpoint=28.0, current_limit=5.0,
-        ip_address="127.0.0.1", mac_address="80-09-02-08-16-C4", scpi_port=5026,
-        visa="TCPIP0::127.0.0.1::inst0::INSTR", poll_ms=500,
-        firmware="E4360A · v3.1.2", featured=False,
+        name=STANDBY_UNIT, rack_id="A", slot=2, enabled=True, featured=False,
+        ip_address="127.0.0.1", mac_address="80-09-02-08-16-C4", scpi_port=5026, transport="socket", channel=1,
+        visa=visa_address("127.0.0.1", 5026, "socket"), poll_ms=1000, firmware="",
     ))
 
     now = datetime.now(timezone.utc)
 
-    # Backfill 24h of history so charts aren't empty on first run — real rows,
-    # just coarser (5 min spacing) the further back they go. The live poller
-    # (see main.py) appends much finer real samples from here forward.
-    h = name_hash(ACTIVE_UNIT)
+    # Backfill 24h of history so charts aren't empty on first run — clearly
+    # synthetic rows at 5 min spacing; the poller appends real 1 s samples
+    # from here forward.
+    h = _hash(ACTIVE_UNIT)
     for i in range(24 * 12, 0, -1):
         ts = now - timedelta(minutes=5 * i)
         wobble = math.sin(i * 0.12 + h) * 1.4 + math.sin(i * 0.35) * 0.6
@@ -61,20 +66,6 @@ def seed_if_empty(db):
     for unit, code, sev, msg, active, mins_ago in seed_alarms:
         db.add(orm.AlarmRow(ts=now - timedelta(minutes=mins_ago), unit_name=unit, code=code,
                              sev=sev, msg=msg, active=active, ackd=False))
-
-    seed_history = [
-        (ACTIVE_UNIT, "output_on", "OK", 38, True, 6),
-        (ACTIVE_UNIT, "set_voltage", "OK", 41, True, 7),
-        (ACTIVE_UNIT, "read_measurements", "OK", 22, False, 8),
-        (STANDBY_UNIT, "identify", "OK", 18, True, 20),
-        (STANDBY_UNIT, "output_off", "OK", 30, True, 40),
-    ]
-    for dev, tpl, status, lat, rb, mins_ago in seed_history:
-        db.add(orm.CommandHistoryRow(
-            ts=now - timedelta(minutes=mins_ago), user="a.ng", device=dev, template=tpl,
-            status=status, latency_ms=lat, readback=rb,
-            correlation_id="CMD-" + format(0x9E00 + mins_ago, "X"),
-        ))
 
     run = orm.ScenarioRun(
         id="RUN-8836", scenario="Eclipse Cycle — Panel A", version="v1.3", status="Completed",

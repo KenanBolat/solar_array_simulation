@@ -103,6 +103,8 @@ export const HIST_COLOR: Record<string, string> = {
   OK: "#34d399",
   WARN: "#fbbf24",
   ERR: "#f87171",
+  UNREACHABLE: "#f87171",
+  TIMEOUT: "#fbbf24",
 };
 
 export function Sev({ sev }: { sev: string }) {

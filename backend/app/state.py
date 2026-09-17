@@ -5,7 +5,10 @@ from sqlalchemy.orm import Session
 
 from . import data, orm
 from .db import session_scope
-from .driver import compute_live_values
+from .scpi import QUESTIONABLE_BITS, CommandResult, Reading, visa_address
+
+MODE_LABEL = {"FIX": "FIXED", "SAS": "SAS CURVE", "TABL": "TABLE"}
+PROTECTION_MASK = sum(bit for bit, *_ in QUESTIONABLE_BITS)
 
 RANGE_WINDOW = {
     "5 min": timedelta(minutes=5),
@@ -24,11 +27,11 @@ def now_hhmmss():
 
 # ---------- units ----------
 def unit_live_values(u: orm.Unit):
-    return compute_live_values(
-        u.name, bool(u.enabled and u.online), u.output, u.voltage_setpoint, u.current_limit,
-        featured=u.featured, featured_v=data.FEATURED_VOLTAGE,
-        featured_i=data.FEATURED_CURRENT, featured_p=data.FEATURED_POWER,
-    )
+    """Last reading the poller mirrored from the instrument. (None, None, None)
+    means no valid reply — never a computed stand-in."""
+    if not (u.enabled and u.online):
+        return None, None, None
+    return u.last_voltage, u.last_current, u.last_power
 
 
 def unit_status(u: orm.Unit):
@@ -51,8 +54,19 @@ def unit_to_dict(u: orm.Unit):
         "statusText": status_text, "statusColor": status_color,
         "voltage": v, "current": i, "power": p,
         "voltageSetpoint": u.voltage_setpoint, "currentLimit": u.current_limit,
+        "opMode": u.op_mode or None, "questionable": u.questionable,
+        "channel": u.channel, "transport": u.transport,
         "featured": u.featured, "enabled": u.enabled,
     }
+
+
+def _device_state(u: orm.Unit) -> str:
+    if not (u.enabled and u.online):
+        return "No comms"
+    if u.questionable & PROTECTION_MASK:
+        tripped = [code for bit, code, *_ in QUESTIONABLE_BITS if u.questionable & bit]
+        return "Protection " + "/".join(tripped)
+    return "Stable" if u.output else "Output Disabled"
 
 
 def unit_to_detail_dict(u: orm.Unit):
@@ -61,15 +75,61 @@ def unit_to_detail_dict(u: orm.Unit):
         "connection": "CONNECTED" if (u.enabled and u.online) else "OFFLINE",
         "ipAddress": u.ip_address, "macAddress": u.mac_address, "scpiPort": u.scpi_port, "visa": u.visa,
         "lastComm": now_hhmmss() if (u.enabled and u.online) else "—",
-        "firmware": u.firmware,
-        "mode": "SIMULATION",
-        "deviceState": "Stable" if u.output else "Output Disabled",
+        "firmware": u.firmware or "—",
+        "mode": MODE_LABEL.get(u.op_mode, "—") if (u.enabled and u.online) else "—",
+        "deviceState": _device_state(u),
     })
     return base
 
 
-def derive_visa(ip_address: str) -> str:
-    return f"TCPIP0::{ip_address}::inst0::INSTR" if ip_address else ""
+def apply_reading(db: Session, u: orm.Unit, result: CommandResult, reading: Reading | None):
+    """Mirror one poll result into the unit row + one measurement row."""
+    if result.ok and reading is not None:
+        u.online = True
+        u.last_voltage = round(reading.voltage, 4)
+        u.last_current = round(reading.current, 4)
+        u.last_power = round(reading.voltage * reading.current, 3)
+        u.output = reading.output
+        u.op_mode = reading.mode
+        if reading.volt_set is not None:
+            u.voltage_setpoint = reading.volt_set
+        if reading.curr_set is not None:
+            u.current_limit = reading.curr_set
+        sync_protection_alarms(db, u, reading.questionable)
+        record_measurement(db, u.name, u.last_voltage, u.last_current, u.last_power, reachable=True)
+    else:
+        u.online = False
+        u.last_voltage = u.last_current = u.last_power = None
+        record_measurement(db, u.name, None, None, None, reachable=False)
+
+
+def sync_protection_alarms(db: Session, u: orm.Unit, questionable: int):
+    """Raise an alarm row when a STAT:QUES:COND bit latches, retire it when it clears."""
+    prev = u.questionable or 0
+    u.questionable = questionable
+    for bit, code, sev, msg in QUESTIONABLE_BITS:
+        now_set, was_set = bool(questionable & bit), bool(prev & bit)
+        if now_set and not was_set:
+            db.add(orm.AlarmRow(ts=datetime.now(timezone.utc), unit_name=u.name, code=f"PROT_{code}",
+                                 sev=sev, msg=msg, active=True, ackd=False))
+        elif was_set and not now_set:
+            for a in db.query(orm.AlarmRow).filter(orm.AlarmRow.unit_name == u.name,
+                                                   orm.AlarmRow.code == f"PROT_{code}",
+                                                   orm.AlarmRow.active.is_(True)).all():
+                a.active = False
+    u.alarm = "warning" if questionable & PROTECTION_MASK else "normal"
+
+
+def derive_visa(ip_address: str, port: int = 5025, transport: str = "vxi11") -> str:
+    return visa_address(ip_address, port, transport)
+
+
+def describe_identity(idn_response: str) -> str:
+    """'KEYSIGHT TECHNOLOGIES,E4360A,MY00000001,A.02.05 · ch1 E4361A' -> 'E4360A A.02.05 · ch1 E4361A'."""
+    head, _, module = idn_response.partition(" · ")
+    fields = [f.strip() for f in head.split(",")]
+    compact = f"{fields[1]} {fields[3]}" if len(fields) >= 4 else head
+    return f"{compact} · {module}" if module else compact
 
 
 def get_unit(db: Session, name: str):
@@ -109,7 +169,8 @@ def summary(db: Session):
 
 
 def create_unit(db: Session, name: str, rack_id: str, ip_address: str = "", mac_address: str = "",
-                 scpi_port: int = 5025, poll_ms: int = 500, slot: int | None = None):
+                 scpi_port: int = 5025, transport: str = "vxi11", channel: int = 1,
+                 poll_ms: int = 1000, slot: int | None = None):
     rack = db.get(orm.Rack, rack_id)
     if not rack:
         raise ValueError(f"Unknown rack {rack_id}")
@@ -120,13 +181,12 @@ def create_unit(db: Session, name: str, rack_id: str, ip_address: str = "", mac_
             raise ValueError(f"Rack {rack_id} is at capacity ({rack.cap} slots)")
     elif slot in taken:
         raise ValueError(f"Slot {slot} in rack {rack_id} is already occupied")
-    ip_address = ip_address or f"192.168.10.{20 + slot}"
     unit = orm.Unit(
-        name=name, rack_id=rack_id, slot=slot, enabled=True, online=True, output=False,
-        alarm="normal", voltage_setpoint=28.0, current_limit=5.0,
+        name=name, rack_id=rack_id, slot=slot, enabled=True, featured=False,
         ip_address=ip_address, mac_address=mac_address, scpi_port=scpi_port,
-        visa=derive_visa(ip_address), poll_ms=poll_ms,
-        firmware="E4360A · v3.1.2", featured=False,
+        transport=transport, channel=channel,
+        visa=derive_visa(ip_address, scpi_port, transport), poll_ms=poll_ms, firmware="",
+        online=False,  # unknown until the first poll gets a valid reply
     )
     db.add(unit)
     db.commit()
@@ -134,17 +194,23 @@ def create_unit(db: Session, name: str, rack_id: str, ip_address: str = "", mac_
 
 
 def update_unit_network(db: Session, name: str, ip_address: str | None, mac_address: str | None,
-                         scpi_port: int | None = None):
+                         scpi_port: int | None = None, transport: str | None = None,
+                         channel: int | None = None):
     unit = db.get(orm.Unit, name)
     if not unit:
         return None
     if ip_address is not None:
         unit.ip_address = ip_address
-        unit.visa = derive_visa(ip_address)
     if mac_address is not None:
         unit.mac_address = mac_address
     if scpi_port is not None:
         unit.scpi_port = scpi_port
+    if transport is not None:
+        unit.transport = transport
+    if channel is not None:
+        unit.channel = channel
+    unit.visa = derive_visa(unit.ip_address, unit.scpi_port, unit.transport)
+    unit.online = False  # re-established by the next poll against the new address
     db.commit()
     return unit
 
@@ -164,42 +230,48 @@ def set_unit_enabled(db: Session, name: str, enabled: bool):
     if not unit:
         return None
     unit.enabled = enabled
-    unit.online = enabled
+    unit.online = False  # a disabled unit isn't polled; an enabled one is unknown until polled
     if not enabled:
-        unit.output = False
+        unit.last_voltage = unit.last_current = unit.last_power = None
     db.commit()
     return unit
 
 
-def set_output(db: Session, name: str, on: bool):
+# The instrument has already confirmed these (readback) by the time they're
+# called — they just bring the cached row forward so the UI doesn't wait for
+# the next poll.
+def mirror_output(db: Session, name: str, on: bool):
     unit = db.get(orm.Unit, name)
     unit.output = on
     db.commit()
     return unit
 
 
-def set_setpoint(db: Session, name: str, voltage: float | None, current_limit: float | None):
+def mirror_setpoint(db: Session, name: str, voltage: float | None = None, current_limit: float | None = None):
     unit = db.get(orm.Unit, name)
     if voltage is not None:
-        unit.voltage_setpoint = max(0.0, min(32.0, voltage))
+        unit.voltage_setpoint = voltage
     if current_limit is not None:
-        unit.current_limit = max(0.0, min(6.0, current_limit))
+        unit.current_limit = current_limit
     db.commit()
     return unit
 
 
-def shutdown_unit(db: Session, name: str):
+def mirror_mode(db: Session, name: str, mode: str):
     unit = db.get(orm.Unit, name)
-    unit.output = False
-    unit.current_limit = 0.0
+    unit.op_mode = mode
     db.commit()
     return unit
 
 
 # ---------- command / audit log ----------
-def log_command(db: Session, user: str, dev: str, tpl: str, st: str = "OK", lat: str = "—", rb: bool = True):
-    row = orm.CommandHistoryRow(ts=datetime.now(timezone.utc), user=user, device=dev, template=tpl,
-                                 status=st, latency_ms=_parse_ms(lat), readback=rb, correlation_id="")
+def log_command(db: Session, user: str, dev: str, tpl: str, result: CommandResult):
+    row = orm.CommandHistoryRow(
+        ts=datetime.now(timezone.utc), user=user, device=dev, template=tpl,
+        status=result.status, latency_ms=result.latency_ms, readback=result.readback_ok, correlation_id="",
+        scpi=result.sent, response=result.response or "", error_code=result.error_code,
+        error_msg=result.error_msg or "",
+    )
     db.add(row)
     db.flush()
     row.correlation_id = "CMD-" + format(0x9F00 + row.id, "X")
@@ -207,17 +279,11 @@ def log_command(db: Session, user: str, dev: str, tpl: str, st: str = "OK", lat:
     return _history_row_dict(row)
 
 
-def _parse_ms(lat: str) -> int:
-    try:
-        return int(float(str(lat).replace("ms", "").strip()))
-    except ValueError:
-        return 0
-
-
 def _history_row_dict(row: orm.CommandHistoryRow):
     return {
         "t": row.ts.strftime("%H:%M:%S"), "user": row.user, "dev": row.device, "tpl": row.template,
         "st": row.status, "lat": f"{row.latency_ms} ms", "rb": row.readback, "cid": row.correlation_id,
+        "scpi": row.scpi, "resp": row.response, "errCode": row.error_code, "err": row.error_msg,
     }
 
 
@@ -418,6 +484,7 @@ def config_units(db: Session):
         out.append({
             "name": u.name, "rack": u.rack.name, "slot": f"S{u.slot}",
             "ipAddress": u.ip_address, "macAddress": u.mac_address, "scpiPort": u.scpi_port, "visa": u.visa,
+            "transport": u.transport, "channel": u.channel, "opMode": u.op_mode or None,
             "poll": f"{u.poll_ms} ms", "enabled": u.enabled, "online": u.online,
         })
     return out

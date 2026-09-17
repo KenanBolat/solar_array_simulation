@@ -4,9 +4,19 @@ import { api } from "@/lib/api";
 import { usePoll } from "@/lib/useApi";
 import { useUi } from "@/lib/ui-context";
 
-const FP_MENU = ["Output On/Off", "Set Voltage", "Set Current Limit", "SAS Curve Mode", "Protection Limits", "I/O Configuration"];
+const FP_MENU = ["Output On/Off", "Set Voltage", "Set Current Limit", "Mode FIX / SAS", "Clear Protection", "I/O Configuration"];
+const MODE_LABEL: Record<string, string> = { FIX: "FIX", SAS: "SAS", TABL: "TABL" };
 
 type Mode = "meter" | "entry" | "menu";
+
+function shortError(e: unknown): string {
+  const msg = e instanceof Error ? e.message : String(e);
+  const m = msg.match(/rejected by instrument · (-?\d+),"([^"]*)"/);
+  if (m) return `REJECTED ${m[1]}\n${m[2].toUpperCase()}`;
+  if (/unreachable/i.test(msg)) return "UNREACHABLE\nNO CONNECTION TO INSTRUMENT";
+  if (/timeout/i.test(msg)) return "TIMEOUT\nINSTRUMENT DID NOT REPLY";
+  return "COMMAND FAILED\n" + msg.slice(0, 40).toUpperCase();
+}
 
 export function FrontPanelModal({ unitName, onClose, onChanged }: { unitName: string; onClose: () => void; onChanged: () => void }) {
   const { notify } = useUi();
@@ -17,36 +27,55 @@ export function FrontPanelModal({ unitName, onClose, onChanged }: { unitName: st
   const [buf, setBuf] = useState("");
   const [menuIdx, setMenuIdx] = useState(0);
   const [flash, setFlash] = useState<string | null>(null);
-  const [chan, setChan] = useState(1);
+  const [busy, setBusy] = useState(false);
   const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [voltSet, setVoltSet] = useState(28.0);
-  const [currSet, setCurrSet] = useState(5.0);
+  const [voltSet, setVoltSet] = useState(0);
+  const [currSet, setCurrSet] = useState(0);
 
+  // The instrument is the source of truth — follow whatever the poller mirrors back.
   useEffect(() => {
     if (unit) { setVoltSet(unit.voltageSetpoint); setCurrSet(unit.currentLimit); }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [unit?.name]);
+  }, [unit?.voltageSetpoint, unit?.currentLimit]);
 
-  const doFlash = (msg: string) => {
+  const doFlash = (msg: string, ms = 1400) => {
     setFlash(msg);
     if (flashTimer.current) clearTimeout(flashTimer.current);
-    flashTimer.current = setTimeout(() => setFlash(null), 1400);
+    flashTimer.current = setTimeout(() => setFlash(null), ms);
   };
 
   if (!unit) return null;
   const outputOn = unit.output;
+  const online = unit.online;
+  const chan = unit.channel;
+  const opMode = unit.opMode ? MODE_LABEL[unit.opMode] ?? unit.opMode : "—";
 
-  const commit = async (patch: { voltage?: number; currentLimit?: number }) => {
-    await api.setSetpoint(unitName, patch);
-    onChanged(); reload();
+  const send = async (label: string, fn: () => Promise<unknown>, okFlash: string) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await fn();
+      doFlash(okFlash);
+      notify(`Front panel · ${label} · OK`);
+    } catch (e) {
+      doFlash(shortError(e), 2600);
+      notify(`Front panel · ${label} · ${e instanceof Error ? e.message : "failed"}`);
+    } finally {
+      setBusy(false);
+      onChanged(); reload();
+    }
   };
 
-  const toggleOutput = async () => {
-    await api.setOutput(unitName, !outputOn);
-    doFlash(!outputOn ? "OUTPUT ENABLED" : "OUTPUT DISABLED");
-    notify(`Front panel · OUTP:STAT ${!outputOn ? "ON" : "OFF"}`);
-    onChanged(); reload();
+  const toggleOutput = () =>
+    send(`OUTP ${!outputOn ? "ON" : "OFF"},(@${chan})`, () => api.setOutput(unitName, !outputOn),
+      !outputOn ? "OUTPUT ENABLED" : "OUTPUT DISABLED");
+
+  const toggleMode = () => {
+    const next = unit.opMode === "SAS" ? "FIX" : "SAS";
+    return send(`CURR:MODE ${next},(@${chan})`, () => api.setMode(unitName, next), `MODE ${next} SET`);
   };
+
+  const clearProtection = () =>
+    send(`OUTP:PROT:CLE (@${chan})`, () => api.clearProtection(unitName), "PROTECTION CLEARED");
 
   const func = (name: string) => {
     if (name === "voltage") { setMode("entry"); setField("VOLTAGE"); setBuf(""); }
@@ -54,9 +83,9 @@ export function FrontPanelModal({ unitName, onClose, onChanged }: { unitName: st
     else if (name === "meter") setMode("meter");
     else if (name === "menu") setMode("menu");
     else if (name === "back") { setMode("meter"); setBuf(""); }
-    else if (name === "channel") { const c = chan === 1 ? 2 : 1; setChan(c); doFlash(`CHANNEL ${c} SELECTED`); }
+    else if (name === "channel") doFlash(`CHANNEL (@${chan}) · FIXED IN CONFIG`);
     else if (name === "help") doFlash("USE NAV + SEL · DIGITS THEN ENTER");
-    else if (name === "error") doFlash("NO ERROR  +0");
+    else if (name === "error") doFlash(unit.questionable ? `STAT:QUES:COND? +${unit.questionable}\nPROTECTION TRIPPED` : "STAT:QUES:COND? +0\nNO FAULTS");
     else if (name === "onoff") toggleOutput();
   };
 
@@ -76,16 +105,13 @@ export function FrontPanelModal({ unitName, onClose, onChanged }: { unitName: st
     if (mode !== "entry") { doFlash("NOTHING TO ENTER"); return; }
     const val = parseFloat(buf);
     if (isNaN(val)) { doFlash("INVALID ENTRY"); return; }
+    setMode("meter"); setBuf("");
     if (field === "VOLTAGE") {
       const v = Math.max(0, Math.min(32, val));
-      setVoltSet(v); setMode("meter"); setBuf("");
-      doFlash(`VOLT ${v.toFixed(2)} V SET`); notify(`Front panel · VOLT ${v.toFixed(2)}`);
-      await commit({ voltage: v });
+      await send(`VOLT ${v},(@${chan})`, () => api.setSetpoint(unitName, { voltage: v }), `VOLT ${v.toFixed(2)} V SET · READBACK OK`);
     } else {
       const a = Math.max(0, Math.min(6, val));
-      setCurrSet(a); setMode("meter"); setBuf("");
-      doFlash(`CURR LIM ${a.toFixed(2)} A SET`); notify(`Front panel · CURR:LIM ${a.toFixed(2)}`);
-      await commit({ currentLimit: a });
+      await send(`CURR ${a},(@${chan})`, () => api.setSetpoint(unitName, { currentLimit: a }), `CURR ${a.toFixed(2)} A SET · READBACK OK`);
     }
   };
 
@@ -97,7 +123,9 @@ export function FrontPanelModal({ unitName, onClose, onChanged }: { unitName: st
         if (menuIdx === 0) func("onoff");
         else if (menuIdx === 1) { setMode("entry"); setField("VOLTAGE"); setBuf(""); }
         else if (menuIdx === 2) { setMode("entry"); setField("CURRENT"); setBuf(""); }
-        else doFlash(FP_MENU[menuIdx].toUpperCase());
+        else if (menuIdx === 3) toggleMode();
+        else if (menuIdx === 4) clearProtection();
+        else doFlash(`${unit.ipAddress}:${unit.scpiPort} ${unit.transport.toUpperCase()}\n${unit.visa}`, 3000);
       }
       return;
     }
@@ -105,24 +133,24 @@ export function FrontPanelModal({ unitName, onClose, onChanged }: { unitName: st
       const d = dir === "up" ? 0.1 : -0.1;
       if (field === "CURRENT") {
         const a = Math.max(0, Math.min(6, +(currSet + d).toFixed(2)));
-        setCurrSet(a); await commit({ currentLimit: a });
+        await send(`CURR ${a},(@${chan})`, () => api.setSetpoint(unitName, { currentLimit: a }), `CURR ${a.toFixed(2)} A SET`);
       } else {
         const v = Math.max(0, Math.min(32, +(voltSet + d).toFixed(2)));
-        setVoltSet(v); await commit({ voltage: v });
+        await send(`VOLT ${v},(@${chan})`, () => api.setSetpoint(unitName, { voltage: v }), `VOLT ${v.toFixed(2)} V SET`);
       }
     } else if (dir === "sel") setMode("meter");
   };
 
-  const fpV = outputOn ? (unit.voltage ?? 0) : 0;
-  const fpI = outputOn ? (unit.current ?? 0) : 0;
-  const fpP = fpV * fpI;
+  const fmtV = unit.voltage != null ? `${unit.voltage.toFixed(3)} V` : "--.--- V";
+  const fmtI = unit.current != null ? `${unit.current.toFixed(3)} A` : "--.--- A";
+  const fmtP = unit.power != null ? `${unit.power.toFixed(2)} W` : "---.-- W";
+  const headerRow = `${unitName}  CH${chan}      OUTPUT ${online ? (outputOn ? "ON" : "OFF") : "?"}`;
 
   let lcdRows: { text: string; big?: boolean; color?: string }[];
   if (mode === "entry") {
-    const unitLbl = field === "VOLTAGE" ? "V" : "A";
     const rng = field === "VOLTAGE" ? "0 - 32 V" : "0 - 6 A";
     lcdRows = [
-      { text: "SET " + field, color: "#7be8c8" },
+      { text: "SET " + field + (unit.opMode === "SAS" ? "   (SAS MODE: WILL BE REJECTED 315)" : ""), color: unit.opMode === "SAS" ? "#fbbf24" : "#7be8c8" },
       { text: "> " + (buf || "") + "█", big: true, color: "#9affd9" },
       { text: `Range ${rng}  Enter=apply`, color: "#4fbf9c" },
     ];
@@ -130,12 +158,20 @@ export function FrontPanelModal({ unitName, onClose, onChanged }: { unitName: st
     lcdRows = [{ text: "MAIN MENU", color: "#7be8c8" }];
     FP_MENU.forEach((m, i) => lcdRows.push({ text: (i === menuIdx ? "▸ " : "  ") + m, color: i === menuIdx ? "#9affd9" : "#3f9c80" }));
   } else if (flash) {
-    lcdRows = [{ text: `${unitName}   CH${chan}`, color: "#7be8c8" }, { text: "" }, { text: "  " + flash, color: "#9affd9" }];
+    const lines = flash.split("\n");
+    const bad = /REJECTED|UNREACHABLE|TIMEOUT|FAILED|TRIPPED/.test(lines[0]);
+    lcdRows = [{ text: `${unitName}   CH${chan}`, color: "#7be8c8" }, ...lines.map((t) => ({ text: "  " + t, color: bad ? "#fbbf24" : "#9affd9" }))];
+  } else if (!online) {
+    lcdRows = [
+      { text: headerRow, color: "#fbbf24" },
+      { text: "NO COMMS", big: true, color: "#fbbf24" },
+      { text: `${unit.transport.toUpperCase()} ${unit.ipAddress}${unit.transport === "socket" ? ":" + unit.scpiPort : ""} · no reply`, color: "#b48a24" },
+    ];
   } else {
     lcdRows = [
-      { text: `${unitName}  CH${chan}      OUTPUT ${outputOn ? "ON" : "OFF"}`, color: outputOn ? "#7be8c8" : "#4fbf9c" },
-      { text: `${fpV.toFixed(3)} V   ${fpI.toFixed(3)} A`, big: true, color: "#9affd9" },
-      { text: `${fpP.toFixed(2)} W   ${outputOn ? "CV" : "OFF"}   Lim ${currSet.toFixed(1)}A`, color: "#4fbf9c" },
+      { text: headerRow, color: outputOn ? "#7be8c8" : "#4fbf9c" },
+      { text: `${fmtV}   ${fmtI}`, big: true, color: "#9affd9" },
+      { text: `${fmtP}   ${opMode}   Lim ${currSet.toFixed(1)}A${unit.questionable ? "   PROT!" : ""}`, color: unit.questionable ? "#fbbf24" : "#4fbf9c" },
     ];
   }
 
@@ -154,7 +190,7 @@ export function FrontPanelModal({ unitName, onClose, onChanged }: { unitName: st
         <div className="mb-3 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
             <span className="text-[13px] font-semibold">Virtual Front Panel</span>
-            <span className="font-mono text-[11px] text-faint">{unitName} · E4360A-class · soft control</span>
+            <span className="font-mono text-[11px] text-faint">{unitName} · E4360A ch{chan} · live SCPI over {unit.transport === "socket" ? "socket" : "VXI-11"}</span>
           </div>
           <button onClick={onClose} className="flex h-[30px] w-[30px] items-center justify-center rounded-md border border-line2 bg-panel2 text-[16px] text-ink">✕</button>
         </div>
@@ -170,18 +206,22 @@ export function FrontPanelModal({ unitName, onClose, onChanged }: { unitName: st
               </div>
               <div className="flex flex-col items-center gap-2.5">
                 <div className="flex items-center gap-1.5">
-                  <span className="h-2 w-2 rounded-full" style={{ background: outputOn ? "#2dd4ee" : "#2c3543", boxShadow: outputOn ? "0 0 7px #2dd4ee" : "none" }} />
+                  <span className="h-2 w-2 rounded-full" style={{ background: outputOn && online ? "#2dd4ee" : "#2c3543", boxShadow: outputOn && online ? "0 0 7px #2dd4ee" : "none" }} />
                   <span className="w-[34px] font-mono text-[9px] text-faint">OUT</span>
                 </div>
                 <div className="flex items-center gap-1.5">
-                  <span className="h-2 w-2 rounded-full bg-green" style={{ boxShadow: "0 0 6px #34d39988" }} />
-                  <span className="w-[34px] font-mono text-[9px] text-faint">LINE</span>
+                  <span className="h-2 w-2 rounded-full" style={{ background: online ? "#34d399" : "#f87171", boxShadow: online ? "0 0 6px #34d39988" : "0 0 6px #f8717188" }} />
+                  <span className="w-[34px] font-mono text-[9px] text-faint">{online ? "LINK" : "LOST"}</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="h-2 w-2 rounded-full" style={{ background: unit.questionable ? "#fbbf24" : "#2c3543", boxShadow: unit.questionable ? "0 0 7px #fbbf24" : "none" }} />
+                  <span className="w-[34px] font-mono text-[9px] text-faint">PROT</span>
                 </div>
               </div>
-              <div className="text-center font-mono text-[8px] tracking-wider text-[#3a4456]">1200 W<br />MODULAR<br />SAS</div>
+              <div className="text-center font-mono text-[8px] tracking-wider text-[#3a4456]">E4360A<br />MODULAR<br />SAS</div>
             </div>
 
-            <div className="led-lcd flex min-h-[104px] min-w-[240px] flex-1 flex-col justify-center overflow-hidden rounded-lg border border-[#11352a] px-[18px] py-3.5" style={{ background: "#06120e", boxShadow: "inset 0 0 24px #00000080, inset 0 0 60px #0aff9e10" }}>
+            <div className="led-lcd flex min-h-[104px] min-w-[240px] flex-1 flex-col justify-center overflow-hidden rounded-lg border border-[#11352a] px-[18px] py-3.5" style={{ background: "#06120e", boxShadow: "inset 0 0 24px #00000080, inset 0 0 60px #0aff9e10", opacity: busy ? 0.75 : 1 }}>
               {lcdRows.map((r, idx) => (
                 <div
                   key={idx}
@@ -207,7 +247,7 @@ export function FrontPanelModal({ unitName, onClose, onChanged }: { unitName: st
                   style={{
                     background: "#1c222c",
                     borderColor: (fn === "menu" && mode === "menu") || (fn === "meter" && mode === "meter") ? "#2dd4ee" : "#2c3543",
-                    color: fn === "error" ? "#fbbf24" : ((fn === "menu" && mode === "menu") || (fn === "meter" && mode === "meter")) ? "#fff" : "#cfd6e2",
+                    color: fn === "error" ? (unit.questionable ? "#fbbf24" : "#8a95a8") : ((fn === "menu" && mode === "menu") || (fn === "meter" && mode === "meter")) ? "#fff" : "#cfd6e2",
                   }}
                 >
                   {label}
@@ -227,7 +267,7 @@ export function FrontPanelModal({ unitName, onClose, onChanged }: { unitName: st
 
             <div className="grid w-[78px] gap-1.5" style={{ gridAutoRows: 42 }}>
               {([
-                { label: "On/Off", fn: "onoff", active: outputOn },
+                { label: "On/Off", fn: "onoff", active: outputOn && online },
                 { label: "Voltage", fn: "voltage", active: field === "VOLTAGE" && mode === "entry" },
                 { label: "Current", fn: "current", active: field === "CURRENT" && mode === "entry" },
               ] as const).map((b) => (
@@ -269,7 +309,7 @@ export function FrontPanelModal({ unitName, onClose, onChanged }: { unitName: st
           </div>
         </div>
         <div className="mt-2.5 text-center font-mono text-[11px] text-faint">
-          Press <b className="text-[#cfd6e2]">Voltage</b> or <b className="text-[#cfd6e2]">Current</b>, type a value on the keypad, then <b className="text-[#cfd6e2]">Enter</b> · <b className="text-[#cfd6e2]">Menu</b> + nav ▲▼ + <b className="text-[#cfd6e2]">Sel</b> · <b className="text-[#cfd6e2]">Meter</b> for live readout
+          Every key sends a real SCPI message to {unit.ipAddress} and waits for <b className="text-[#cfd6e2]">*OPC?</b> + <b className="text-[#cfd6e2]">SYST:ERR?</b> · readings are <b className="text-[#cfd6e2]">MEAS:VOLT?</b>/<b className="text-[#cfd6e2]">FETC:CURR?</b> polled every second · <b className="text-[#cfd6e2]">Error</b> shows STAT:QUES:COND?
         </div>
       </div>
     </div>

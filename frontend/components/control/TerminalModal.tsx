@@ -70,7 +70,7 @@ export function TerminalModal({ unitName, onClose, onChanged }: { unitName: stri
     if (cmd.hazardous) {
       ask({
         title: `Confirm: ${cmd.name}`,
-        message: `${cmd.effect || cmd.summary}${value !== undefined ? ` — value ${value}` : ""}. Dispatched to ${unitName} as a validated command and recorded in the audit log.`,
+        message: `${cmd.effect || cmd.summary}${value !== undefined ? ` — value ${value}` : ""}. Sent to ${unitName} as SCPI, confirmed with *OPC? / SYST:ERR? / readback, and recorded in the audit log.`,
         confirmLabel: `Send ${cmd.name}`,
         danger: cmd.act === "shutdown",
         onConfirm: () => runResolved(cmd.act, cmd.name, value),
@@ -114,7 +114,7 @@ export function TerminalModal({ unitName, onClose, onChanged }: { unitName: stri
             <div className="text-[13px] font-semibold">Command Terminal · {unitName}</div>
           </div>
           <div className="flex items-center gap-2.5">
-            <span className="font-mono text-[10px] text-faint">closed vocabulary — no shell access</span>
+            <span className="font-mono text-[10px] text-faint">closed vocabulary → real SCPI · no passthrough</span>
             <button
               onClick={onClose}
               className="flex h-7 w-7 items-center justify-center rounded-md border border-line2 bg-panel2 text-[15px] text-ink"
