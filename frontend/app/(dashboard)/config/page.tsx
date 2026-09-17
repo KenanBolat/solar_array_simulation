@@ -251,6 +251,12 @@ function UnitsConfigTab() {
             )}
           </span>
           <span className="flex flex-wrap gap-1.5">
+            {u.enabled && !u.online && (
+              <button onClick={async () => { const r = await api.reconnect(u.name); notify(`${u.name} · ${r.result}`); reload(); }}
+                className="rounded border border-cyan/50 bg-cyan/10 px-2 py-1 font-sans text-[10px] font-semibold text-cyan" title="Drop the cached connection and poll now">
+                Reconnect
+              </button>
+            )}
             <button onClick={() => toggleEnabled(u)} className="rounded border border-line2 bg-panel2 px-2 py-1 font-sans text-[10px] font-semibold text-ink">
               {u.enabled ? "Disable" : "Enable"}
             </button>

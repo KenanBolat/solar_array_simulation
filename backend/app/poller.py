@@ -6,6 +6,18 @@ from .db import session_scope
 from .scpi import Instrument
 
 POLL_INTERVAL_S = 1.0
+BACKOFF_AFTER = 3        # consecutive failures before slowing down
+BACKOFF_EVERY = 5        # ...then try only every Nth second
+
+_failures: dict[str, int] = {}
+_tick = 0
+
+
+def _due(name: str) -> bool:
+    """Don't hammer an instrument that isn't answering: after a few failures
+    retry every 5 s instead of every second, so the app itself never becomes
+    the client that keeps its connection slots busy."""
+    return _failures.get(name, 0) < BACKOFF_AFTER or _tick % BACKOFF_EVERY == 0
 
 
 async def telemetry_poller():
@@ -15,12 +27,15 @@ async def telemetry_poller():
     unit row plus one measurement row. No valid reply means the unit is
     offline and the sample is an explicit null — never a made-up number.
     Units are polled concurrently so N units cost ~one round trip, not N."""
+    global _tick
     while True:
         await asyncio.sleep(POLL_INTERVAL_S)
+        _tick += 1
         try:
             with session_scope() as db:
                 targets = [(u.name, Instrument.for_unit(u))
-                           for u in db.query(orm.Unit).filter(orm.Unit.enabled.is_(True)).all()]
+                           for u in db.query(orm.Unit).filter(orm.Unit.enabled.is_(True)).all()
+                           if _due(u.name)]
             if not targets:
                 continue
 
@@ -33,6 +48,7 @@ async def telemetry_poller():
                     if not u or not u.enabled:
                         continue  # disabled between the poll and now — drop the sample
                     state.apply_reading(db, u, result, reading)
+                    _failures[name] = 0 if result.ok else _failures.get(name, 0) + 1
                     if result.ok and not u.firmware:
                         need_idn.append((name, inst))
 

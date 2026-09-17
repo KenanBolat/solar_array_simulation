@@ -5,7 +5,7 @@ from .. import data, state
 from ..db import get_db
 from ..models import (CreateUnitRequest, ModeRequest, NetworkRequest, OutputRequest, ProfileRequest,
                       SetpointRequest, TerminalExecuteRequest)
-from ..scpi import TRANSPORTS, CommandResult, Instrument
+from ..scpi import TRANSPORTS, CommandResult, Instrument, close_session
 
 router = APIRouter(prefix="/api/units", tags=["units"])
 
@@ -164,6 +164,17 @@ def safe_shutdown(name: str, db: Session = Depends(get_db)):
     _, entry = _dispatch(db, u, "safe_shutdown", lambda i: i.safe_shutdown())
     state.mirror_output(db, name, False)
     return {"unit": state.unit_to_detail_dict(u), "log": entry}
+
+
+@router.post("/{name}/reconnect")
+def reconnect(name: str, db: Session = Depends(get_db)):
+    """Drop the cached connection and poll immediately — the "try again now"
+    button for a unit that reads unreachable."""
+    u = _unit_or_404(db, name)
+    close_session(u.visa)
+    result, reading = Instrument.for_unit(u).measure()
+    state.apply_reading(db, u, result, reading)
+    return {"unit": state.unit_to_detail_dict(u), "result": result.describe()}
 
 
 @router.post("/{name}/refresh")

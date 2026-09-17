@@ -36,6 +36,7 @@ export const api = {
   setMode: (name: string, mode: "FIX" | "SAS") =>
     j<{ unit: UnitDetail }>(`/api/units/${name}/mode`, { method: "POST", body: JSON.stringify({ mode }) }),
   clearProtection: (name: string) => j<{ unit: UnitDetail }>(`/api/units/${name}/clear-protection`, { method: "POST" }),
+  reconnect: (name: string) => j<{ unit: UnitDetail; result: string }>(`/api/units/${name}/reconnect`, { method: "POST" }),
   refresh: (name: string) => j<{ unit: UnitDetail }>(`/api/units/${name}/refresh`, { method: "POST" }),
   identify: (name: string) => j<{ idn: string }>(`/api/units/${name}/identify`, { method: "POST" }),
   applyProfile: (name: string, profile: string) =>
