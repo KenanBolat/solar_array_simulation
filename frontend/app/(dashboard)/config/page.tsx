@@ -121,7 +121,7 @@ function UnitsConfigTab() {
   const [ip, setIp] = useState("");
   const [mac, setMac] = useState("");
   const [port, setPort] = useState("5025");
-  const [transport, setTransport] = useState("vxi11");
+  const [transport, setTransport] = useState("auto");
   const [channel, setChannel] = useState("1");
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
@@ -192,14 +192,41 @@ function UnitsConfigTab() {
 
   const describeAddress = (u: any) =>
     u.ipAddress
-      ? `${u.ipAddress}${u.transport === "socket" ? ":" + u.scpiPort : ""} · ${u.transport === "socket" ? "socket" : "VXI-11"} · (@${u.channel ?? 1})`
+      ? `${u.ipAddress}${u.transport === "socket" ? ":" + u.scpiPort : ""} · ${u.transport === "socket" ? "socket" : u.transport === "auto" ? "auto (probing)" : "VXI-11"} · (@${u.channel ?? 1})`
       : "no IP set";
+
+  const resetAll = async () => {
+    try {
+      const r = await api.resetConnections();
+      const online = r.units.filter((x) => x.online).length;
+      notify(`Dropped ${r.dropped} session${r.dropped === 1 ? "" : "s"} · re-polled ${r.units.length} units · ${online} online`);
+    } catch (e) {
+      notify(e instanceof Error ? e.message : "Reset failed");
+    }
+    reload();
+  };
+
+  const rebootUnit = (u: any) => {
+    ask({
+      title: `Reboot mainframe — ${u.name}`,
+      message: `Sends SYST:REBoot to ${u.ipAddress}. The mainframe restarts (~30 s), its output goes OFF, and every session on it is dropped — including telnet or VISA sessions held on other machines. This is the only way to free a session the app doesn't own. If a second unit is configured on the same IP (channel 2), it reboots too.`,
+      confirmLabel: "Send SYST:REB", danger: true,
+      onConfirm: async () => {
+        try { await api.rebootUnit(u.name); notify(`${u.name} · SYST:REB sent — allow ~30 s`); }
+        catch (e) { notify(e instanceof Error ? e.message : "Reboot failed"); }
+        reload();
+      },
+    });
+  };
 
   return (
     <Panel className="overflow-hidden">
       <div className="flex items-center justify-between border-b border-line px-4 py-3">
         <div className="text-[13px] font-semibold">Simulator Units</div>
-        <Btn variant="primary" onClick={() => setShowForm((s) => !s)}>{showForm ? "Cancel" : "+ Add Simulator Unit"}</Btn>
+        <div className="flex items-center gap-2">
+          <span title="Close every instrument session this app holds and re-poll all units now"><Btn onClick={resetAll}>⟲ Reset all connections</Btn></span>
+          <Btn variant="primary" onClick={() => setShowForm((s) => !s)}>{showForm ? "Cancel" : "+ Add Simulator Unit"}</Btn>
+        </div>
       </div>
       <div className="grid gap-2.5 border-b border-line px-4 py-2 font-mono text-[9.5px] uppercase tracking-wider text-faint" style={{ gridTemplateColumns: "80px 70px 40px 1fr 60px 130px 160px" }}>
         <span>Unit</span><span>Rack</span><span>Slot</span><span>Address (IP · transport · channel / MAC)</span><span>Poll</span><span>State</span><span>Actions</span>
@@ -215,10 +242,11 @@ function UnitsConfigTab() {
                 className="w-[110px] rounded border border-line2 bg-bg px-1.5 py-1 font-mono text-[10.5px] text-ink" />
               <select value={editTransport} onChange={(e) => setEditTransport(e.target.value)}
                 className="rounded border border-line2 bg-bg px-1 py-1 font-mono text-[10.5px] text-ink">
+                <option value="auto">auto</option>
                 <option value="vxi11">VXI-11</option>
                 <option value="socket">socket</option>
               </select>
-              {editTransport === "socket" && (
+              {editTransport !== "vxi11" && (
                 <input value={editPort} onChange={(e) => setEditPort(e.target.value)} placeholder="port"
                   className="w-[52px] rounded border border-line2 bg-bg px-1.5 py-1 font-mono text-[10.5px] text-ink" />
               )}
@@ -260,6 +288,12 @@ function UnitsConfigTab() {
             <button onClick={() => toggleEnabled(u)} className="rounded border border-line2 bg-panel2 px-2 py-1 font-sans text-[10px] font-semibold text-ink">
               {u.enabled ? "Disable" : "Enable"}
             </button>
+            {u.enabled && u.transport !== "auto" && (
+              <button onClick={() => rebootUnit(u)} title="SYST:REBoot — drops every session on the mainframe, output OFF, ~30 s"
+                className="rounded border border-amber/40 bg-amber/10 px-2 py-1 font-sans text-[10px] font-semibold text-amber">
+                Reboot
+              </button>
+            )}
             <button onClick={() => deleteUnit(u)} className="rounded border border-red/40 bg-red/10 px-2 py-1 font-sans text-[10px] font-semibold text-red">
               Delete
             </button>
@@ -295,6 +329,7 @@ function UnitsConfigTab() {
               <label className="mb-1 block text-[10px] text-faint">Transport</label>
               <select value={transport} onChange={(e) => setTransport(e.target.value)}
                 className="w-full rounded-md border border-line2 bg-bg px-2.5 py-2 text-[12px] text-ink">
+                <option value="auto">auto (VXI-11, then socket)</option>
                 <option value="vxi11">VXI-11 (documented)</option>
                 <option value="socket">Raw socket</option>
               </select>
@@ -323,6 +358,7 @@ function UnitsConfigTab() {
           </div>
           <div className="mt-2 text-[10px] leading-relaxed text-faint">
             A unit is one output channel <span className="font-mono">(@1)</span> or <span className="font-mono">(@2)</span> of one E4360 mainframe at this IP.
+            <b className="text-[#cfd6e2]"> auto</b> tries VXI-11 first, then the raw socket on the port given, and pins whichever answers.
             <b className="text-[#cfd6e2]"> VXI-11</b> is the LAN interface the E4360 Programmer&apos;s Reference documents (<span className="font-mono">TCPIP0::&lt;ip&gt;::INSTR</span>).
             <b className="text-[#cfd6e2]"> Raw socket</b> sends the same SCPI over a plain TCP port — only pick it if your instrument&apos;s LAN page confirms the port; it&apos;s what the bundled emulators on 127.0.0.1 use.
             The MAC is a label only. Every second the unit is asked <span className="font-mono">MEAS:VOLT?</span> / <span className="font-mono">FETC:CURR?</span> / <span className="font-mono">OUTP?</span> / <span className="font-mono">CURR:MODE?</span> / <span className="font-mono">STAT:QUES:COND?</span>; no valid reply means unreachable and a null sample.

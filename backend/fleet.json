@@ -1,0 +1,10 @@
+{
+  "_comment": "Lab fleet: the real Keysight E4360A mainframes. One unit = one output channel of one mainframe. transport 'auto' tries the documented VXI-11 path first, then the raw socket on 'port', and pins whichever answers. Used only to seed an empty data.db; edit units afterwards from Configuration -> Simulator Units. For a no-hardware demo start the backend with SAS_FLEET_FILE=fleet.emulator.json.",
+  "racks": [
+    { "id": "A", "name": "RACK-A", "loc": "Lab 2 · Bay 1", "cap": 4 }
+  ],
+  "units": [
+    { "name": "SAS-01", "rack": "A", "slot": 1, "ip": "10.1.20.126", "mac": "80-09-02-05-6A-48", "port": 5025, "transport": "auto", "channel": 1, "featured": true },
+    { "name": "SAS-02", "rack": "A", "slot": 2, "ip": "10.1.20.215", "mac": "80-09-02-08-16-C4", "port": 5025, "transport": "auto", "channel": 1 }
+  ]
+}

@@ -5,7 +5,8 @@ from .. import data, state
 from ..db import get_db
 from ..models import (CreateUnitRequest, ModeRequest, NetworkRequest, OutputRequest, ProfileRequest,
                       SetpointRequest, TerminalExecuteRequest)
-from ..scpi import TRANSPORTS, CommandResult, Instrument, close_session
+from ..poller import measure_unit, reset_backoff
+from ..scpi import TRANSPORTS, CommandResult, Instrument, close_all_sessions, close_session
 
 router = APIRouter(prefix="/api/units", tags=["units"])
 
@@ -48,6 +49,26 @@ def _validate_addressing(transport: str | None, channel: int | None):
 @router.get("")
 def list_units(db: Session = Depends(get_db)):
     return [state.unit_to_dict(u) for u in state.list_units(db)]
+
+
+@router.post("/reset-connections")
+def reset_connections(db: Session = Depends(get_db)):
+    """Kill every session this app holds, forget the retry backoff, and re-poll
+    all enabled units right now. Sessions held by other clients survive this —
+    only the instrument can drop those (POST /{name}/reboot)."""
+    dropped = close_all_sessions()
+    reset_backoff()
+    out = []
+    for u in state.list_units(db):
+        if not u.enabled:
+            continue
+        result, reading, resolved = measure_unit(u.ip_address, u.scpi_port, u.transport, u.channel)
+        if resolved and u.transport == "auto":
+            u.transport = resolved
+            u.visa = state.derive_visa(u.ip_address, u.scpi_port, resolved)
+        state.apply_reading(db, u, result, reading)
+        out.append({"name": u.name, "online": u.online, "transport": u.transport, "lastError": u.last_error or None})
+    return {"dropped": dropped, "units": out}
 
 
 @router.post("")
@@ -172,9 +193,31 @@ def reconnect(name: str, db: Session = Depends(get_db)):
     button for a unit that reads unreachable."""
     u = _unit_or_404(db, name)
     close_session(u.visa)
-    result, reading = Instrument.for_unit(u).measure()
+    result, reading, resolved = measure_unit(u.ip_address, u.scpi_port, u.transport, u.channel)
+    if resolved and u.transport == "auto":
+        u.transport = resolved
+        u.visa = state.derive_visa(u.ip_address, u.scpi_port, resolved)
     state.apply_reading(db, u, result, reading)
     return {"unit": state.unit_to_detail_dict(u), "result": result.describe()}
+
+
+@router.post("/{name}/reboot")
+def reboot_unit(name: str, db: Session = Depends(get_db)):
+    """SYSTem:REBoot — the documented way to make the mainframe drop every
+    session on it (including a telnet held on another machine). Output goes
+    OFF; the unit answers again after ~30 s."""
+    u = _unit_or_404(db, name)
+    if u.transport == "auto":
+        raise HTTPException(409, "Transport not resolved yet — no path to this unit has answered, so nothing can carry the reboot")
+    result = Instrument.for_unit(u).reboot()
+    entry = state.log_command(db, USER, name, "system_reboot", result)
+    if not result.ok:
+        raise HTTPException(502, f"system_reboot · {result.describe()} · corr {entry['cid']}")
+    u.online = False
+    u.last_error = "SYST:REB sent — mainframe rebooting, allow ~30 s"
+    u.last_voltage = u.last_current = u.last_power = None
+    db.commit()
+    return {"unit": state.unit_to_detail_dict(u), "log": entry}
 
 
 @router.post("/{name}/refresh")

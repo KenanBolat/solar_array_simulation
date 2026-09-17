@@ -44,7 +44,7 @@ import pyvisa
 from pyvisa import constants
 
 DEFAULT_TIMEOUT_MS = 2000
-TRANSPORTS = ("vxi11", "socket")
+TRANSPORTS = ("auto", "vxi11", "socket")  # auto: the poller tries vxi11 then socket and pins whichever answers
 MODES = {"FIX": "FIX", "FIXED": "FIX", "SAS": "SAS", "TABL": "TABL", "TABLE": "TABL"}
 
 _rm: pyvisa.ResourceManager | None = None
@@ -69,6 +69,8 @@ def _lock_for(address: str) -> threading.Lock:
 
 def close_session(address: str):
     """Drop the cached connection for an address (e.g. when a unit is re-addressed or deleted)."""
+    if not address:
+        return
     with _lock_for(address):
         inst = _sessions.pop(address, None)
         if inst is not None:
@@ -76,6 +78,16 @@ def close_session(address: str):
                 inst.close()
             except Exception:
                 pass
+
+
+def close_all_sessions() -> int:
+    """Drop every cached connection — the app's side of "kill all sessions".
+    Sessions held by OTHER clients (a telnet window elsewhere) can only be
+    dropped by the instrument itself: see Instrument.reboot()."""
+    addresses = list(_sessions)
+    for a in addresses:
+        close_session(a)
+    return len(addresses)
 
 
 def visa_address(ip_address: str, port: int, transport: str) -> str:
@@ -139,8 +151,9 @@ class Instrument:
         self._reused = False
 
     @classmethod
-    def for_unit(cls, unit) -> "Instrument":
-        return cls(unit.ip_address, unit.scpi_port, unit.transport, unit.channel)
+    def for_unit(cls, unit, transport: str | None = None) -> "Instrument":
+        t = transport or unit.transport
+        return cls(unit.ip_address, unit.scpi_port, "vxi11" if t == "auto" else t, unit.channel)
 
     @property
     def ch(self) -> str:
@@ -254,6 +267,21 @@ class Instrument:
             return CommandResult("OK", sent, response=response, latency_ms=self._ms(t0),
                                  readback_ok=self._readback_matches(response, expect))
         return self._run(sent, op)
+
+    def write_only(self, sent: str) -> CommandResult:
+        """For commands after which the instrument cannot answer (SYST:REBoot)."""
+        def op(inst, t0):
+            inst.write(sent)
+            return CommandResult("OK", sent, latency_ms=self._ms(t0))
+        return self._run(sent, op)
+
+    def reboot(self) -> CommandResult:
+        """SYSTem:REBoot — 'returns the unit to its power-on state' (guide). Drops
+        every session on the mainframe, including ones held by other clients;
+        the output goes OFF. Allow ~30 s before it answers again."""
+        res = self.write_only("SYST:REB")
+        close_session(self.address)
+        return res
 
     def query(self, sent: str) -> CommandResult:
         def op(inst, t0):

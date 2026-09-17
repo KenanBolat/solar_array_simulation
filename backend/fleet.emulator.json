@@ -1,0 +1,10 @@
+{
+  "_comment": "No-hardware demo fleet: two software E4360 mainframes (app/emulator.py) that the backend starts on 127.0.0.1:5025 and :5026 whenever a unit points at loopback. Select with SAS_FLEET_FILE=fleet.emulator.json before first start (or delete data.db to re-seed).",
+  "racks": [
+    { "id": "A", "name": "RACK-A", "loc": "Lab 2 · Bay 1 (emulated)", "cap": 4 }
+  ],
+  "units": [
+    { "name": "SAS-01", "rack": "A", "slot": 1, "ip": "127.0.0.1", "mac": "80-09-02-05-6A-48", "port": 5025, "transport": "socket", "channel": 1, "featured": true },
+    { "name": "SAS-02", "rack": "A", "slot": 2, "ip": "127.0.0.1", "mac": "80-09-02-08-16-C4", "port": 5026, "transport": "socket", "channel": 1 }
+  ]
+}

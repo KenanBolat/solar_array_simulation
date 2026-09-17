@@ -18,7 +18,7 @@ export interface Unit {
   opMode: "FIX" | "SAS" | "TABL" | null;
   questionable: number;
   channel: number;
-  transport: "vxi11" | "socket";
+  transport: "auto" | "vxi11" | "socket";
   lastError: string | null;
   featured: boolean;
   enabled: boolean;

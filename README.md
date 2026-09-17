@@ -95,10 +95,11 @@ Units are configured from Configuration → Simulator Units (add / delete / enab
 disable / edit addressing) with:
 
 - **IP address** — the mainframe's LAN address.
-- **Transport** — `vxi11` (default): VISA `TCPIP0::<ip>::INSTR`, the LAN interface the
-  Programmer's Reference documents. `socket`: the same SCPI over a plain TCP port
-  (`TCPIP0::<ip>::<port>::SOCKET`). A fixed SCPI socket port is **not** documented in
-  this guide, so only choose it if your instrument's LAN configuration page confirms it.
+- **Transport** — `auto` (default): tries `vxi11` then `socket` and pins whichever
+  answers. `vxi11`: VISA `TCPIP0::<ip>::INSTR`, the LAN interface the Programmer's
+  Reference documents. `socket`: the same SCPI over a plain TCP port
+  (`TCPIP0::<ip>::<port>::SOCKET`) — a fixed SCPI socket port is **not** documented in
+  this guide, so only pin it if your instrument's LAN configuration page confirms it.
 - **Port** — used by the socket transport only.
 - **Channel** — 1 or 2.
 - **MAC address** — a label for your inventory; not used for communication.
@@ -116,16 +117,43 @@ platform sends them in one message so the instrument validates the curve as a wh
 plain `VOLT`/`CURR` is rejected with `315 Settings conflict error` — the UI warns about
 this and the rejection is shown verbatim. Profiles live in `data.SAS_PROFILES`.
 
+### Deploying for the lab (one backend for everyone)
+
+Run **one** backend + frontend on a host that can reach the instruments (your
+workstation, or a small lab server) and have everyone open
+`http://<that-host>:3301`. Do **not** run a backend per user against the same
+instruments: each backend would hold its own session, and an E4360 accepts only
+one raw-socket client — they'd fight, and everyone would see *unreachable*. Both
+servers already bind to all interfaces (`-H 0.0.0.0` / `--host 0.0.0.0`) and the
+UI talks to the API through the Next.js proxy on the same origin, so nothing else
+needs opening besides ports 3301 (and 8000 if someone wants Swagger).
+
+The fleet an empty database is seeded from lives in `backend/fleet.json` — the
+lab's real mainframes (`10.1.20.126`, `10.1.20.215`, transport `auto`). Anyone
+cloning the repo therefore sees the real instruments, not the emulators. Edit
+units afterwards from Configuration → Simulator Units; `fleet.json` is only read
+when `data.db` is empty. For a no-hardware demo:
+
+```bash
+SAS_FLEET_FILE=fleet.emulator.json .venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
+
+**Stuck sessions.** Configuration → Simulator Units has **⟲ Reset all connections**
+(drops every session *this app* holds and re-polls at once) and, per unit,
+**Reboot** — `SYSTem:REBoot`, the documented way to make the mainframe drop *every*
+session including a telnet left open on another machine (output goes OFF, ~30 s).
+`backend/probe.py <ip>` tells you from the backend host which paths answer.
+
 ### Bundled emulators (no hardware needed)
 
 `backend/app/emulator.py` is a software E4360 mainframe: it parses the same bytes the
 driver would send to a physical unit — channel lists, implied header paths in compound
 messages, long/short mnemonics, `*OPC?`, the `SYST:ERR?` FIFO with the guide's error
 codes — and answers in the same formats, with FIX/SAS physics against a resistive load
-and OVP/OCP latching into `STAT:QUES:COND?`. Two instances start with the backend on
-`127.0.0.1:5025` / `:5026`; the seeded units **SAS-01** and **SAS-02** point at them
-(transport `socket`). To drive your physical units, edit each unit's IP and switch the
-transport to `vxi11` in Configuration — the driver code path is identical.
+and OVP/OCP latching into `STAT:QUES:COND?`. Two instances start on `127.0.0.1:5025` /
+`:5026` whenever any unit is addressed at loopback (or `SAS_EMULATORS=1`); the
+`fleet.emulator.json` fleet points **SAS-01**/**SAS-02** at them over the socket
+transport. The driver code path is identical to the one used for real hardware.
 
 ### Run it
 
@@ -133,9 +161,9 @@ transport to `vxi11` in Configuration — the driver code path is identical.
 # backend (http://localhost:8000)
 cd backend
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt   # includes pyvisa + pyvisa-py
-.venv/bin/python -m uvicorn app.main:app --port 8000
+.venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 
-# frontend (http://localhost:3301) — proxies /api/* to the backend above
+# frontend (http://<host>:3301) — proxies /api/* to the backend above
 cd frontend
 npm install
 npm run dev

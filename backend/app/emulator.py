@@ -84,6 +84,8 @@ class E4360Emulator:
         self.firmware = firmware
         self.max_clients = max_clients  # real instruments accept only a few simultaneous connections
         self.clients = 0
+        self._writers: set[asyncio.StreamWriter] = set()
+        self.rebooting_until = 0.0
         self.errors: deque[tuple[int, str]] = deque()
         self.rlstate = "LOC"
         for ch in channels:
@@ -279,6 +281,9 @@ class E4360Emulator:
             return ",".join('""' for _ in chans)
         if canon == "SYST:VERS" and q:
             return "1999.0"
+        if canon == "SYST:REB" and not q:
+            self._schedule_reboot()
+            return None
         if canon == "SYST:COMM:RLST":
             if q:
                 return self.rlstate
@@ -400,11 +405,28 @@ class E4360Emulator:
         return None
 
     # ---------- server ----------
+    def _schedule_reboot(self, boot_seconds: float = 3.0):
+        """SYST:REBoot: every client is dropped (including ones we didn't
+        hear the command from), the channels return to their power-on state
+        and nothing is accepted until the 'firmware' is back up."""
+        import time
+        self.rebooting_until = time.monotonic() + boot_seconds
+        for w in list(self._writers):
+            try:
+                w.close()
+            except Exception:
+                pass
+        for ch in self.channels:
+            ch.reset()
+        self.errors.clear()
+
     async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
-        if self.clients >= self.max_clients:
+        import time
+        if self.clients >= self.max_clients or time.monotonic() < self.rebooting_until:
             writer.close()  # like the real thing: no banner, no error — the connection is simply dropped
             return
         self.clients += 1
+        self._writers.add(writer)
         try:
             while True:
                 line = await reader.readline()
@@ -421,6 +443,7 @@ class E4360Emulator:
             pass
         finally:
             self.clients -= 1
+            self._writers.discard(writer)
             writer.close()
 
     async def serve(self, host: str = "127.0.0.1") -> asyncio.AbstractServer | None:
