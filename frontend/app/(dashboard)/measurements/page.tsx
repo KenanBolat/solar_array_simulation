@@ -79,14 +79,14 @@ export default function MeasurementsPage() {
                     const active = selected.includes(u.name);
                     const c = STATUS_COLOR[u.statusColor];
                     return (
-                      <div key={u.name} onClick={() => toggle(u.name)} title={u.online ? `${u.name} · channel ${u.channel}` : "Comms currently down"}
+                      <div key={u.name} onClick={() => toggle(u.name)} title={u.online ? `${u.label} · ${u.mainframe}` : "Comms currently down"}
                         className="cursor-pointer rounded-md px-2.5 py-1 font-mono text-[11px] font-semibold"
                         style={{
                           color: active ? "#04121a" : u.online ? "#8a95a8" : "#f87171",
                           background: active ? c : "transparent",
                           border: `1px solid ${active ? c : u.online ? "#232a36" : "#f8717155"}`,
                         }}>
-                        {u.name} <span style={{ opacity: 0.7 }}>(@{u.channel})</span>{!u.online && !active && " ⚠"}
+                        {u.instrument} <span style={{ opacity: 0.7 }}>(@{u.channel})</span>{!u.online && !active && " ⚠"}
                       </div>
                     );
                   })}
@@ -122,7 +122,9 @@ export default function MeasurementsPage() {
                 {(meas?.series ?? []).map((s) => (
                   <div key={s.name} className="flex items-center gap-1.5">
                     <span className="h-2.5 w-2.5 rounded-sm" style={{ background: STATUS_COLOR[s.statusColor] }} />
-                    <span className="font-mono text-[10.5px] text-muted">{s.name}</span>
+                    <span className="font-mono text-[10.5px] text-muted">
+                      {(units ?? []).find((u) => u.name === s.name)?.label ?? s.name}
+                    </span>
                   </div>
                 ))}
               </div>
@@ -161,9 +163,9 @@ export default function MeasurementsPage() {
             {(meas?.rows ?? []).map((m, idx) => {
               const u = (units ?? []).find((x) => x.name === m.unit);
               return (
-                <div key={idx} className="grid items-center gap-2.5 border-b border-[#161b24] px-3.5 py-2 font-mono text-[11px]" style={{ gridTemplateColumns: "76px 66px 1fr 1fr 1fr 52px 66px" }}>
+                <div key={idx} className="grid items-center gap-2.5 border-b border-[#161b24] px-3.5 py-2 font-mono text-[11px]" style={{ gridTemplateColumns: "112px 66px 1fr 1fr 1fr 52px 66px" }}>
                   <span className="font-bold" style={{ color: u ? STATUS_COLOR[u.statusColor] : "#e6eaf2" }}
-                    title={u ? `${u.mainframe} (@${u.channel})` : undefined}>{m.unit}</span>
+                    title={u ? u.mainframe : undefined}>{u?.label ?? m.unit}</span>
                   <span className="text-muted">{m.time}</span>
                   <span>{m.v != null ? <>{m.v.toFixed(3)}<span className="text-faint"> V</span></> : <span className="text-faint">—</span>}</span>
                   <span>{m.i != null ? <>{m.i.toFixed(3)}<span className="text-faint"> A</span></> : <span className="text-faint">—</span>}</span>

@@ -3,8 +3,8 @@ from sqlalchemy.orm import Session
 
 from .. import data, state
 from ..db import get_db
-from ..models import (CreateUnitRequest, ModeRequest, NetworkRequest, OutputRequest, ProfileRequest,
-                      SasCurveRequest, SetpointRequest, StateSlotRequest, TerminalExecuteRequest)
+from ..models import (CreateInstrumentRequest, CreateUnitRequest, ModeRequest, NetworkRequest, OutputRequest,
+                      ProfileRequest, SasCurveRequest, SetpointRequest, StateSlotRequest, TerminalExecuteRequest)
 from ..diagnostics import diagnose, host_addresses
 from ..poller import measure_unit, reset_backoff
 from ..scpi import TRANSPORTS, CommandResult, Instrument, close_all_sessions, close_session
@@ -52,6 +52,51 @@ def list_units(db: Session = Depends(get_db)):
     return [state.unit_to_dict(u) for u in state.list_units(db)]
 
 
+@router.post("/instrument")
+def create_instrument(body: CreateInstrumentRequest, db: Session = Depends(get_db)):
+    """Add a mainframe: one unit per output channel, named <name> for channel 1
+    and <name>-CH<n> after that (all displayed as '<name> (@n)'). With
+    channels="auto" the instrument is asked SYST:CHAN? first, so the fleet
+    matches the hardware rather than an assumption."""
+    _validate_addressing(body.transport, None)
+    if state.get_unit(db, body.name):
+        raise HTTPException(409, f"Unit {body.name} already exists")
+
+    count, detected = 2, None
+    if body.channels == "auto":
+        probe = Instrument(body.ipAddress, body.scpiPort,
+                           "vxi11" if body.transport == "auto" else body.transport, 1)
+        res = probe.channel_count()
+        if not res.ok and body.transport == "auto":  # auto transport: try the socket path too
+            probe = Instrument(body.ipAddress, body.scpiPort, "socket", 1)
+            res = probe.channel_count()
+        if res.ok and res.response:
+            try:
+                count = detected = max(1, min(2, int(float(res.response))))
+            except ValueError:
+                count = 1
+        else:
+            count = 1  # couldn't ask: configure channel 1 only, Discover channels can add the rest later
+    else:
+        try:
+            count = max(1, min(2, int(body.channels)))
+        except ValueError:
+            raise HTTPException(400, "channels must be 'auto', '1' or '2'")
+
+    created = []
+    for ch in range(1, count + 1):
+        unit_name = body.name if ch == 1 else f"{body.name}-CH{ch}"
+        try:
+            u = state.create_unit(db, unit_name, body.rack, ip_address=body.ipAddress,
+                                   mac_address=body.macAddress or "", scpi_port=body.scpiPort,
+                                   transport=body.transport, channel=ch, poll_ms=body.pollMs,
+                                   mainframe_name=body.name)
+        except ValueError as e:
+            raise HTTPException(400, f"channel {ch}: {e}")
+        created.append(state.unit_to_dict(u))
+    return {"instrument": body.name, "detectedChannels": detected, "created": created}
+
+
 @router.post("/discover-channels")
 def discover_channels(db: Session = Depends(get_db)):
     """Ask every distinct mainframe how many output channels it has
@@ -86,7 +131,8 @@ def discover_channels(db: Session = Depends(get_db)):
                 continue
             try:
                 u = state.create_unit(db, new_name, probe.rack_id, ip_address=ip, mac_address=probe.mac_address,
-                                       scpi_port=port, transport=transport, channel=ch, poll_ms=probe.poll_ms)
+                                       scpi_port=port, transport=transport, channel=ch, poll_ms=probe.poll_ms,
+                                       mainframe_name=state.instrument_name(probe))
             except ValueError as e:
                 report.append({"mainframe": label, "channels": count, "error": f"channel {ch}: {e}"})
                 continue

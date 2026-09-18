@@ -111,10 +111,16 @@ export function ControlScreen({ unitName }: { unitName: string }) {
     const detail = p.mode === "SAS"
       ? `Isc ${p.isc} A · Imp ${p.imp} A · Vmp ${p.vmp} V · Voc ${p.voc} V`
       : `${p.volt} V · ${p.curr} A`;
+    const switching = unit.opMode && unit.opMode !== p.mode;
     ask({
       title: `Recall preset — ${p.name}`,
-      message: `Sets ${unitName} to ${p.mode} mode and applies ${detail}. Each command is confirmed by readback and recorded in the audit log.`,
-      confirmLabel: "Recall preset", danger: false,
+      message: `A preset is a complete operating point, so this sends CURR:MODE ${p.mode},${ch} first, then ${detail}.`
+        + (switching
+          ? `\n\n⚠ ${unit.label} is currently in ${unit.opMode} mode — recalling this preset SWITCHES it to ${p.mode}, which changes the output characteristic${unit.output ? " while the output is ON" : ""}.`
+          : `\n\nThe channel is already in ${p.mode} mode, so only the values change.`)
+        + `\n\nEach command is confirmed by readback and recorded in the audit log.`,
+      confirmLabel: switching ? `Switch to ${p.mode} & recall` : "Recall preset",
+      danger: !!switching && unit.output,
       onConfirm: () => exec(`Preset ${p.name}`, () => api.applyPreset(p.id, unitName)),
     });
   };
@@ -144,7 +150,7 @@ export function ControlScreen({ unitName }: { unitName: string }) {
       <div className="mb-4 flex items-center justify-between">
         <div className="flex items-center gap-3">
           <span className="h-[11px] w-[11px] rounded-full" style={{ background: statusColor, boxShadow: `0 0 10px ${statusColor}66` }} />
-          <h2 className="m-0 font-mono text-[20px] font-bold">{unit.name}</h2>
+          <h2 className="m-0 font-mono text-[20px] font-bold">{unit.label}</h2>
           <span className="font-mono text-[12px] text-muted">{unit.pos}</span>
         </div>
         <div className="flex items-center gap-2.5">
@@ -161,7 +167,8 @@ export function ControlScreen({ unitName }: { unitName: string }) {
           <Panel className="p-3.5">
             <Eyebrow>Device Identity</Eyebrow>
             <div className="flex flex-col gap-2 font-mono text-[11.5px]">
-              <Row k="Name" v={unit.name} />
+              <Row k="Instrument" v={unit.instrument} />
+              <Row k="Channel" v={`(@${unit.channel})`} />
               <Row k="Location" v={unit.pos} />
               <Row k="Connection" v={<span style={{ color: unit.online ? "#34d399" : "#f87171" }} title={unit.lastError ?? ""}>● {unit.connection}</span>} />
               {!unit.online && (
@@ -231,6 +238,9 @@ export function ControlScreen({ unitName }: { unitName: string }) {
                     {selectedPreset.mode === "SAS"
                       ? `Isc ${selectedPreset.isc} · Imp ${selectedPreset.imp} · Vmp ${selectedPreset.vmp} · Voc ${selectedPreset.voc}`
                       : `${selectedPreset.volt} V · ${selectedPreset.curr} A`}
+                    {unit.opMode && unit.opMode !== selectedPreset.mode && (
+                      <span className="text-amber"> · switches {unit.opMode} → {selectedPreset.mode}</span>
+                    )}
                   </div>
                 )}
               </div>

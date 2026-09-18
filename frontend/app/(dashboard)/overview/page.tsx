@@ -17,7 +17,7 @@ function UnitCard({ u }: { u: Unit }) {
       <div className="mb-1.5 flex items-center justify-between">
         <div className="flex items-center gap-1.5">
           <span className="h-[9px] w-[9px] rounded-full" style={{ background: c, boxShadow: `0 0 8px ${c}66` }} />
-          <span className="font-mono text-[12.5px] font-bold">{u.name}</span>
+          <span className="font-mono text-[12.5px] font-bold">{u.label}</span>
         </div>
         <span
           className="rounded font-mono text-[10px] font-semibold"

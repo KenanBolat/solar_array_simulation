@@ -2,6 +2,10 @@ export type StatusColor = "faint" | "amber" | "cyan" | "green";
 
 export interface Unit {
   name: string;
+  /** How a channel is shown: "SAS-01 (@1)". */
+  label: string;
+  /** The mainframe this channel belongs to: "SAS-01". */
+  instrument: string;
   rack: string;
   slot: number;
   pos: string;

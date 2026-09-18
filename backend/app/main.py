@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import orm, state
-from .db import engine, ensure_columns, session_scope
+from .db import backfill_defaults, engine, ensure_columns, session_scope
 from .diagnostics import host_addresses
 from .emulator import demo_emulators
 from .poller import telemetry_poller
@@ -27,6 +27,7 @@ def _emulators_wanted() -> bool:
 async def lifespan(app: FastAPI):
     orm.Base.metadata.create_all(engine)
     ensure_columns(orm.Base)
+    backfill_defaults()
     with session_scope() as db:
         seed_if_empty(db)
         state.seed_presets(db)

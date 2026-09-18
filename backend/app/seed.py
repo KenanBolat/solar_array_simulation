@@ -56,7 +56,8 @@ def apply_fleet(db) -> dict:
         u = db.get(orm.Unit, spec["name"])
         if u is None:
             db.add(orm.Unit(
-                name=spec["name"], rack_id=spec["rack"], slot=int(spec["slot"]), enabled=spec.get("enabled", True),
+                name=spec["name"], mainframe_name=spec.get("instrument", spec["name"].split("-CH")[0]),
+                rack_id=spec["rack"], slot=int(spec["slot"]), enabled=spec.get("enabled", True),
                 featured=bool(spec.get("featured", False)), ip_address=ip, mac_address=spec.get("mac", ""),
                 scpi_port=port, transport=transport, channel=channel, visa=visa_address(ip, port, transport),
                 poll_ms=1000, firmware="",
@@ -99,7 +100,8 @@ def seed_if_empty(db):
         port = int(spec.get("port", 5025))
         transport = spec.get("transport", "auto")
         db.add(orm.Unit(
-            name=spec["name"], rack_id=spec["rack"], slot=int(spec["slot"]), enabled=spec.get("enabled", True),
+            name=spec["name"], mainframe_name=spec.get("instrument", spec["name"].split("-CH")[0]),
+            rack_id=spec["rack"], slot=int(spec["slot"]), enabled=spec.get("enabled", True),
             featured=bool(spec.get("featured", False)),
             ip_address=ip, mac_address=spec.get("mac", ""), scpi_port=port, transport=transport,
             channel=int(spec.get("channel", 1)), visa=visa_address(ip, port, transport),

@@ -44,11 +44,23 @@ def unit_status(u: orm.Unit):
     return "ONLINE", "green"
 
 
+def instrument_name(u: orm.Unit) -> str:
+    """The mainframe this channel belongs to. Older rows predate the column, so
+    fall back to the unit name with any -CHn suffix stripped."""
+    return u.mainframe_name or u.name.split("-CH")[0]
+
+
+def unit_label(u: orm.Unit) -> str:
+    """How a channel is shown everywhere: 'SAS-01 (@1)', 'SAS-01 (@2)'."""
+    return f"{instrument_name(u)} (@{u.channel})"
+
+
 def unit_to_dict(u: orm.Unit):
     v, i, p = unit_live_values(u)
     status_text, status_color = unit_status(u)
     return {
-        "name": u.name, "rack": u.rack_id, "slot": u.slot,
+        "name": u.name, "label": unit_label(u), "instrument": instrument_name(u),
+        "rack": u.rack_id, "slot": u.slot,
         "pos": f"{u.rack.name} · S{u.slot}",
         "online": bool(u.enabled and u.online), "output": bool(u.output), "alarm": u.alarm,
         "statusText": status_text, "statusColor": status_color,
@@ -156,10 +168,12 @@ def list_units(db: Session):
 def racks(db: Session):
     out = []
     for rack in db.query(orm.Rack).order_by(orm.Rack.id).all():
-        us = sorted(rack.units, key=lambda u: u.slot)
+        us = sorted(rack.units, key=lambda u: (u.slot, u.channel))
         out.append({
             "id": rack.id, "name": rack.name, "loc": rack.loc, "cap": rack.cap,
-            "count": len(us), "onCount": sum(1 for u in us if u.enabled and u.online),
+            # A slot holds one mainframe; its channels share that slot.
+            "count": len({instrument_name(u) for u in us}),
+            "onCount": sum(1 for u in us if u.enabled and u.online),
             "units": [unit_to_dict(u) for u in us],
         })
     return out
@@ -183,19 +197,26 @@ def summary(db: Session):
 
 def create_unit(db: Session, name: str, rack_id: str, ip_address: str = "", mac_address: str = "",
                  scpi_port: int = 5025, transport: str = "vxi11", channel: int = 1,
-                 poll_ms: int = 1000, slot: int | None = None):
+                 poll_ms: int = 1000, slot: int | None = None, mainframe_name: str = ""):
     rack = db.get(orm.Rack, rack_id)
     if not rack:
         raise ValueError(f"Unknown rack {rack_id}")
-    taken = {u.slot for u in rack.units}
-    if slot is None:
+    mainframe = mainframe_name or name.split("-CH")[0]
+    # A rack slot holds a MAINFRAME, and its channels live in that one slot —
+    # a two-channel instrument must not consume two slots.
+    sibling = next((u for u in rack.units if instrument_name(u) == mainframe), None)
+    taken = {u.slot for u in rack.units if instrument_name(u) != mainframe}
+    if sibling is not None:
+        slot = sibling.slot
+    elif slot is None:
         slot = next((s for s in range(1, rack.cap + 1) if s not in taken), None)
         if slot is None:
-            raise ValueError(f"Rack {rack_id} is at capacity ({rack.cap} slots)")
+            raise ValueError(f"Rack {rack_id} is at capacity ({rack.cap} instruments)")
     elif slot in taken:
         raise ValueError(f"Slot {slot} in rack {rack_id} is already occupied")
     unit = orm.Unit(
-        name=name, rack_id=rack_id, slot=slot, enabled=True, featured=False,
+        name=name, mainframe_name=mainframe,
+        rack_id=rack_id, slot=slot, enabled=True, featured=False,
         ip_address=ip_address, mac_address=mac_address, scpi_port=scpi_port,
         transport=transport, channel=channel,
         visa=derive_visa(ip_address, scpi_port, transport), poll_ms=poll_ms, firmware="",
@@ -588,7 +609,8 @@ def config_units(db: Session):
     out = []
     for u in list_units(db):
         out.append({
-            "name": u.name, "rack": u.rack.name, "slot": f"S{u.slot}",
+            "name": u.name, "label": unit_label(u), "instrument": instrument_name(u),
+            "rack": u.rack.name, "slot": f"S{u.slot}",
             "ipAddress": u.ip_address, "macAddress": u.mac_address, "scpiPort": u.scpi_port, "visa": u.visa,
             "transport": u.transport, "channel": u.channel, "opMode": u.op_mode or None,
             "lastError": u.last_error or None,
@@ -606,29 +628,43 @@ def rack_slots(db: Session, rack_id: str):
     rack = db.get(orm.Rack, rack_id)
     if not rack:
         return []
-    occ = {u.slot: u.name for u in rack.units}
+    occ: dict[int, str] = {}
+    for u in rack.units:  # a slot holds one mainframe, whatever its channel count
+        occ[u.slot] = instrument_name(u)
     return [{"key": f"{rack_id}{i}", "label": f"Slot {i}", "occ": occ.get(i, ""), "empty": i not in occ}
             for i in range(1, rack.cap + 1)]
 
 
 def unassigned_units(db: Session, rack_id: str):
-    # In this build every unit belongs to a rack slot the moment it's created,
-    # so "unassigned" is units from OTHER racks that could be dragged in.
-    return [u.name for u in db.query(orm.Unit).filter(orm.Unit.rack_id != rack_id).all()]
+    # Instruments from OTHER racks that could be dragged in. Deduplicated —
+    # a two-channel mainframe is one draggable instrument, not two.
+    return sorted({instrument_name(u) for u in db.query(orm.Unit).filter(orm.Unit.rack_id != rack_id).all()})
+
+
 
 
 def assign_unit(db: Session, slot_key: str, unit_name: str):
+    """Move an instrument into a rack slot. A slot holds one mainframe, so all
+    of that mainframe's channels move together; if the slot is occupied, the
+    two instruments swap (again, with all their channels)."""
     rack_id, slot_num = slot_key[0], int(slot_key[1:])
-    unit = db.get(orm.Unit, unit_name)
-    if not unit:
-        raise ValueError(f"Unknown unit {unit_name}")
     target_rack = db.get(orm.Rack, rack_id)
     if not target_rack:
         raise ValueError(f"Unknown rack {rack_id}")
-    occupant = next((u for u in target_rack.units if u.slot == slot_num and u.name != unit_name), None)
-    if occupant:
-        occupant.slot = unit.slot if unit.rack_id == rack_id else occupant.slot
-        occupant.rack_id = unit.rack_id
-    unit.rack_id, unit.slot = rack_id, slot_num
+
+    # unit_name may be an instrument name (from the palette) or a unit name.
+    moving = [u for u in db.query(orm.Unit).all() if instrument_name(u) == unit_name]
+    if not moving:
+        u = db.get(orm.Unit, unit_name)
+        if not u:
+            raise ValueError(f"Unknown instrument {unit_name}")
+        moving = [x for x in db.query(orm.Unit).all() if instrument_name(x) == instrument_name(u)]
+
+    from_rack, from_slot = moving[0].rack_id, moving[0].slot
+    occupants = [u for u in target_rack.units if u.slot == slot_num and u not in moving]
+    for u in occupants:  # swap into the slot the moving instrument came from
+        u.rack_id, u.slot = from_rack, from_slot
+    for u in moving:
+        u.rack_id, u.slot = rack_id, slot_num
     db.commit()
     return {"slots": rack_slots(db, rack_id), "palette": unassigned_units(db, rack_id)}

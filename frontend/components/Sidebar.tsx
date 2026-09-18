@@ -7,7 +7,7 @@ import { usePoll } from "@/lib/useApi";
 export function Sidebar() {
   const pathname = usePathname();
   const { data: units } = usePoll(() => api.units(), 15000);
-  const firstUnit = units && units.length > 0 ? units[0].name : null;
+  const firstUnit = units?.find((u) => u.enabled)?.name ?? units?.[0]?.name ?? null;
   const controlHref = firstUnit ? `/control/${firstUnit}` : "/overview";
 
   const navItems: { label: string; href: string }[] = [

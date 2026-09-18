@@ -19,7 +19,8 @@ class Unit(Base):
     the instrument itself reports — the instrument is the source of truth,
     the row is a cache of its last known state."""
     __tablename__ = "units"
-    name = Column(String, primary_key=True)
+    name = Column(String, primary_key=True)          # unique key, e.g. "SAS-01" or "SAS-01-CH2"
+    mainframe_name = Column(String, nullable=False, default="")  # the instrument, e.g. "SAS-01" — shared by its channels
     rack_id = Column(String, ForeignKey("racks.id"), nullable=False)
     slot = Column(Integer, nullable=False)
     enabled = Column(Boolean, nullable=False, default=True)   # administrative: included in the fleet at all

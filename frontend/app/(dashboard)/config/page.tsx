@@ -125,7 +125,7 @@ function UnitsConfigTab() {
   const [mac, setMac] = useState("");
   const [port, setPort] = useState("5025");
   const [transport, setTransport] = useState("auto");
-  const [channel, setChannel] = useState("1");
+  const [channels, setChannels] = useState("auto");
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
   const [editIp, setEditIp] = useState("");
@@ -150,20 +150,22 @@ function UnitsConfigTab() {
 
   const rackOptions = (racks ?? []).length ? racks!.map((r) => r.id) : ["A"];
 
-  const addUnit = async () => {
+  const addInstrument = async () => {
     const trimmed = name.trim();
-    if (!trimmed) { notify("Unit name is required"); return; }
+    if (!trimmed) { notify("Instrument name is required"); return; }
+    if (!ip.trim()) { notify("IP address is required"); return; }
     setBusy(true);
     try {
-      await api.createUnit({
-        name: trimmed, rack, ipAddress: ip.trim() || undefined, macAddress: mac.trim() || undefined,
-        scpiPort: port.trim() ? Number(port) : undefined, transport, channel: Number(channel),
+      const r = await api.createInstrument({
+        name: trimmed, rack, ipAddress: ip.trim(), macAddress: mac.trim() || undefined,
+        scpiPort: port.trim() ? Number(port) : undefined, transport, channels,
       });
-      notify(`Added ${trimmed}`);
-      setName(""); setIp(""); setMac(""); setPort("5025"); setTransport("vxi11"); setChannel("1"); setShowForm(false);
+      const how = r.detectedChannels ? `instrument reported ${r.detectedChannels} channel(s)` : "configured without asking";
+      notify(`Added ${r.created.map((u) => u.label).join(", ")} · ${how}`);
+      setName(""); setIp(""); setMac(""); setPort("5025"); setTransport("auto"); setChannels("auto"); setShowForm(false);
       reload();
     } catch (e) {
-      notify(e instanceof Error ? e.message : "Failed to add unit");
+      notify(e instanceof Error ? e.message : "Failed to add instrument");
     } finally {
       setBusy(false);
     }
@@ -290,7 +292,7 @@ function UnitsConfigTab() {
           <span title="Ask each mainframe how many output channels it has (SYST:CHAN?) and add any that aren't configured"><Btn onClick={discoverChannels}>Discover channels</Btn></span>
           <span title="Re-address the stored units from the backend's fleet file"><Btn onClick={applyFleet}>Apply fleet file</Btn></span>
           <span title="Close every instrument session this app holds and re-poll all units now"><Btn onClick={resetAll}>⟲ Reset all connections</Btn></span>
-          <Btn variant="primary" onClick={() => setShowForm((s) => !s)}>{showForm ? "Cancel" : "+ Add Simulator Unit"}</Btn>
+          <Btn variant="primary" onClick={() => setShowForm((s) => !s)}>{showForm ? "Cancel" : "+ Add Instrument"}</Btn>
         </div>
       </div>
       <div className="grid gap-2.5 border-b border-line px-4 py-2 font-mono text-[9.5px] uppercase tracking-wider text-faint" style={{ gridTemplateColumns: "80px 70px 40px 1fr 60px 130px 230px" }}>
@@ -299,7 +301,7 @@ function UnitsConfigTab() {
       {(units ?? []).map((u: any) => (
         <div key={u.name} className="border-b border-[#161b24]">
         <div className="grid items-center gap-2.5 px-4 py-2.5 font-mono text-[11px]" style={{ gridTemplateColumns: "80px 70px 40px 1fr 60px 130px 230px" }}>
-          <span className="font-bold">{u.name}</span>
+          <span className="font-bold" title={u.name}>{u.label ?? u.name}</span>
           <span className="text-[#cfd6e2]">{u.rack}</span>
           <span className="text-muted">{u.slot}</span>
           {editing === u.name ? (
@@ -395,10 +397,10 @@ function UnitsConfigTab() {
 
       {showForm && (
         <div className="border-t border-line px-4 py-3.5">
-          <div className="mb-2.5 text-[11px] text-muted">New unit</div>
+          <div className="mb-2.5 text-[11px] text-muted">New instrument — one E4360 mainframe and a unit for each of its output channels</div>
           <div className="grid grid-cols-8 gap-2.5">
             <div>
-              <label className="mb-1 block text-[10px] text-faint">Unit Name</label>
+              <label className="mb-1 block text-[10px] text-faint">Instrument Name</label>
               <input value={name} onChange={(e) => setName(e.target.value)} placeholder="SAS-03"
                 className="w-full rounded-md border border-line2 bg-bg px-2.5 py-2 font-mono text-[12px] text-ink" />
             </div>
@@ -429,11 +431,12 @@ function UnitsConfigTab() {
                 className="w-full rounded-md border border-line2 bg-bg px-2.5 py-2 font-mono text-[12px] text-ink disabled:opacity-40" />
             </div>
             <div>
-              <label className="mb-1 block text-[10px] text-faint">Channel</label>
-              <select value={channel} onChange={(e) => setChannel(e.target.value)}
-                className="w-full rounded-md border border-line2 bg-bg px-2.5 py-2 font-mono text-[12px] text-ink">
-                <option value="1">(@1)</option>
-                <option value="2">(@2)</option>
+              <label className="mb-1 block text-[10px] text-faint">Channels</label>
+              <select value={channels} onChange={(e) => setChannels(e.target.value)}
+                className="w-full rounded-md border border-line2 bg-bg px-2.5 py-2 text-[12px] text-ink">
+                <option value="auto">Auto-detect</option>
+                <option value="1">Channel 1 only</option>
+                <option value="2">Both channels</option>
               </select>
             </div>
             <div>
@@ -442,11 +445,12 @@ function UnitsConfigTab() {
                 className="w-full rounded-md border border-line2 bg-bg px-2.5 py-2 font-mono text-[12px] text-ink" />
             </div>
             <div className="flex items-end">
-              <Btn variant="primary" className="w-full" disabled={busy} onClick={addUnit}>Create Unit</Btn>
+              <Btn variant="primary" className="w-full" disabled={busy} onClick={addInstrument}>Add Instrument</Btn>
             </div>
           </div>
           <div className="mt-2 text-[10px] leading-relaxed text-faint">
-            A unit is one output channel <span className="font-mono">(@1)</span> or <span className="font-mono">(@2)</span> of one E4360 mainframe at this IP.
+            One unit is created per output channel, shown as <span className="font-mono">{name.trim() || "SAS-03"} (@1)</span>, <span className="font-mono">{name.trim() || "SAS-03"} (@2)</span>.
+            <b className="text-[#cfd6e2]"> Auto-detect</b> asks the instrument itself (<span className="font-mono">SYST:CHAN?</span>) rather than assuming — if it can&apos;t be reached, only channel 1 is configured and <b className="text-[#cfd6e2]">Discover channels</b> can add the rest later.
             <b className="text-[#cfd6e2]"> auto</b> tries VXI-11 first, then the raw socket on the port given, and pins whichever answers.
             <b className="text-[#cfd6e2]"> VXI-11</b> is the LAN interface the E4360 Programmer&apos;s Reference documents (<span className="font-mono">TCPIP0::&lt;ip&gt;::INSTR</span>).
             <b className="text-[#cfd6e2]"> Raw socket</b> sends the same SCPI over a plain TCP port — only pick it if your instrument&apos;s LAN page confirms the port; it&apos;s what the bundled emulators on 127.0.0.1 use.
@@ -502,9 +506,13 @@ function PresetsTab() {
     const detail = p.mode === "SAS"
       ? `Isc ${p.isc} A · Imp ${p.imp} A · Vmp ${p.vmp} V · Voc ${p.voc} V`
       : `${p.volt} V · ${p.curr} A`;
+    const current = (units ?? []).find((u) => u.name === chosen);
+    const switching = current?.opMode && current.opMode !== p.mode;
     ask({
       title: `Apply “${p.name}” to ${chosen}`,
-      message: `Sets ${chosen} to ${p.mode} mode and sends ${detail}. Every command is confirmed by readback and recorded in the audit log.`,
+      message: `A preset is a complete operating point: this sends CURR:MODE ${p.mode} first, then ${detail}.`
+        + (switching ? `\n\n⚠ ${chosen} is in ${current!.opMode} mode — this SWITCHES it to ${p.mode}.` : "")
+        + `\n\nEvery command is confirmed by readback and recorded in the audit log.`,
       confirmLabel: "Apply preset", danger: false,
       onConfirm: async () => {
         try { await api.applyPreset(p.id, chosen); notify(`“${p.name}” applied to ${chosen}`); }
@@ -521,14 +529,14 @@ function PresetsTab() {
         <div>
           <div className="text-[13px] font-semibold">Presets</div>
           <div className="mt-0.5 font-mono text-[10px] text-faint">
-            {presets.length} of {max} · stored by the platform, applied as SCPI · the instrument&apos;s own <span className="text-[#cfd6e2]">*SAV/*RCL</span> slots (0 and 1) live in the Virtual Front Panel
+            {presets.length} of {max} · applying one sends <span className="text-[#cfd6e2]">CURR:MODE</span> first, so a preset also switches FIX ↔ SAS · the instrument&apos;s own <span className="text-[#cfd6e2]">*SAV/*RCL</span> slots (0 and 1) live in the Virtual Front Panel
           </div>
         </div>
         <div className="flex items-center gap-2">
           {targets.length > 0 && (
             <select value={chosen} onChange={(e) => setTarget(e.target.value)} title="Unit that Apply sends to"
               className="rounded-md border border-line2 bg-bg px-2 py-1.5 font-mono text-[11px] text-ink">
-              {targets.map((u) => <option key={u.name} value={u.name}>{u.name} (@{u.channel})</option>)}
+              {targets.map((u) => <option key={u.name} value={u.name}>{u.label}</option>)}
             </select>
           )}
           <Btn variant="primary" disabled={full && !showForm} onClick={() => setShowForm((s) => !s)}>

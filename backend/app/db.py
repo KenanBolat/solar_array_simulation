@@ -33,6 +33,17 @@ def ensure_columns(base):
                 conn.execute(text(ddl))
 
 
+def backfill_defaults():
+    """One-off value backfills for columns added by ensure_columns, where an
+    empty default would be wrong (ALTER TABLE can only supply a constant)."""
+    with engine.begin() as conn:
+        if "units" in inspect(engine).get_table_names():
+            conn.execute(text(
+                "UPDATE units SET mainframe_name = "
+                "CASE WHEN instr(name, '-CH') > 0 THEN substr(name, 1, instr(name, '-CH') - 1) ELSE name END "
+                "WHERE mainframe_name IS NULL OR mainframe_name = ''"))
+
+
 def get_db():
     db = SessionLocal()
     try:

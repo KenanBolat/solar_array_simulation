@@ -77,6 +77,20 @@ class CreateUnitRequest(BaseModel):
     pollMs: int = 1000
 
 
+class CreateInstrumentRequest(BaseModel):
+    """Add one E4360 mainframe and a unit for each of its output channels.
+    channels: "auto" asks the instrument (SYST:CHAN?); "1" or "2" configures
+    exactly that many without asking."""
+    name: str
+    rack: str = "A"
+    ipAddress: str
+    macAddress: Optional[str] = None
+    scpiPort: int = 5025
+    transport: str = "auto"
+    channels: str = "auto"
+    pollMs: int = 1000
+
+
 class NetworkRequest(BaseModel):
     ipAddress: Optional[str] = None
     macAddress: Optional[str] = None

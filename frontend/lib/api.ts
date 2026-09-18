@@ -71,6 +71,9 @@ export const api = {
     }),
   createUnit: (body: { name: string; rack: string; slot?: number; ipAddress?: string; macAddress?: string; scpiPort?: number; transport?: string; channel?: number; pollMs?: number }) =>
     j<UnitDetail>("/api/units", { method: "POST", body: JSON.stringify(body) }),
+  createInstrument: (body: { name: string; rack: string; ipAddress: string; macAddress?: string; scpiPort?: number; transport?: string; channels?: string }) =>
+    j<{ instrument: string; detectedChannels: number | null; created: Unit[] }>(
+      "/api/units/instrument", { method: "POST", body: JSON.stringify(body) }),
   deleteUnit: (name: string) => j<{ ok: boolean }>(`/api/units/${name}`, { method: "DELETE" }),
   enableUnit: (name: string) => j<UnitDetail>(`/api/units/${name}/enable`, { method: "POST" }),
   disableUnit: (name: string) => j<UnitDetail>(`/api/units/${name}/disable`, { method: "POST" }),
