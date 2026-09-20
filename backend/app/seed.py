@@ -14,7 +14,7 @@ import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from . import orm
+from . import data, orm
 from .scpi import visa_address
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
@@ -128,7 +128,7 @@ def seed_if_empty(db):
                              msg="Output power approaching configured limit (117.6 W of 160 W)", active=True, ackd=False))
         run = orm.ScenarioRun(
             id="RUN-8836", scenario="Eclipse Cycle — Panel A", version="v1.3", status="Completed",
-            dry=True, progress=100, targets=first, by="a.ng",
+            dry=True, progress=100, targets=first, by=data.DEFAULT_USER,
             started=(now - timedelta(hours=2)).strftime("%H:%M:%S"),
             finished=(now - timedelta(hours=2) + timedelta(minutes=2)).strftime("%H:%M:%S"), dur="2m 10s",
         )

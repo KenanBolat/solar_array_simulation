@@ -59,15 +59,6 @@ export function Sidebar() {
           );
         })}
       </nav>
-      <div className="flex items-center gap-2.5 border-t border-line px-4 py-3">
-        <div className="flex h-7 w-7 items-center justify-center rounded-full bg-line2 text-[11px] font-semibold text-ink">
-          AN
-        </div>
-        <div className="leading-tight">
-          <div className="text-[12px] font-semibold">a.ng</div>
-          <div className="text-[10px] text-faint">Operator · L2</div>
-        </div>
-      </div>
     </aside>
   );
 }

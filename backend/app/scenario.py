@@ -459,7 +459,8 @@ def _event(db: Session, run_id: str, node: str, lvl: str, m: str,
         power=reading.get("power") if reading else None))
 
 
-def create_run(db: Session, scenario_id: str, by: str = "a.ng", dry: bool = False) -> str:
+def create_run(db: Session, scenario_id: str, by: str = "", dry: bool = False) -> str:
+    by = by or data.DEFAULT_USER
     s = db.get(orm.Scenario, scenario_id)
     if not s:
         raise ValueError("Unknown scenario")

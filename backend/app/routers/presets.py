@@ -1,14 +1,14 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from .. import state
+from .. import data, state
 from ..db import get_db
 from ..models import ApplyPresetRequest, PresetEnableRequest, PresetRequest
 from ..scpi import Instrument
 
 router = APIRouter(prefix="/api/presets", tags=["presets"])
 
-USER = "a.ng"
+USER = data.DEFAULT_USER
 
 
 @router.get("")

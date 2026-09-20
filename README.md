@@ -107,6 +107,17 @@ disable / edit addressing) with:
 Platform-level soft limits (32 V / 6 A, `data.OPERATIONAL_LIMITS`) are enforced before a
 command is sent; the instrument enforces its own module ratings on top.
 
+The other entries in `OPERATIONAL_LIMITS` — max power, allowed output state, the two power
+thresholds and `safe_shutdown_rule` — are **declared but not enforced**: nothing compares a
+live reading against them and no automatic shutdown is armed. Configuration → Operational
+Limits labels them as such. The working equivalent today is a scenario's own **Threshold
+Check → Safe Shutdown** path, which does measure, compare and de-energise. All of these
+values are read from `backend/app/data.py` at start and are deliberately not editable from
+the browser — the voltage and current ceilings are the last guard before a real output.
+
+There is no sign-in. Every manual action is attributed to `data.DEFAULT_USER` (`root`) in
+the audit log; scenario steps are logged as `scenario`.
+
 ### Channels
 
 An E4360 mainframe holds up to two output modules, and **one unit here is one

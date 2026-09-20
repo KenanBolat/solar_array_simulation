@@ -7,11 +7,7 @@ import { usePageHeader } from "@/lib/header-context";
 import { useUi } from "@/lib/ui-context";
 import { Btn, Panel } from "@/components/ui";
 
-const TABS = [
-  "Rack Configuration", "Simulator Units", "Presets",
-  "Operational Limits", "Device Groups", "Measurement Retention", "User Permissions",
-];
-const IMPLEMENTED = ["Rack Configuration", "Simulator Units", "Presets", "Operational Limits"];
+const TABS = ["Rack Configuration", "Simulator Units", "Presets", "Operational Limits"];
 
 export default function ConfigPage() {
   usePageHeader("Configuration", "Administrator · system setup");
@@ -37,12 +33,6 @@ export default function ConfigPage() {
       {tab === "Simulator Units" && <UnitsConfigTab />}
       {tab === "Presets" && <PresetsTab />}
       {tab === "Operational Limits" && <LimitsConfigTab />}
-      {!IMPLEMENTED.includes(tab) && (
-        <Panel className="p-10 text-center">
-          <div className="mb-1.5 text-[14px] font-semibold">{tab}</div>
-          <div className="text-[12px] text-muted">Device groups, retention policy and permission roles configure here.</div>
-        </Panel>
-      )}
     </div>
   );
 }
@@ -762,23 +752,55 @@ function LimitsConfigTab() {
   return (
     <div className="grid grid-cols-2 items-start gap-4.5">
       <Panel className="p-4">
-        <div className="mb-3.5 text-[13px] font-semibold">Operational Limits</div>
+        <div className="mb-1 text-[13px] font-semibold">Enforced limits</div>
+        <div className="mb-3.5 text-[11px] leading-snug text-muted">
+          Checked on every value the platform sends — front panel, presets, solar profiles and
+          scenario blocks alike. A value outside these is refused with the reason before any SCPI
+          leaves the backend. The instrument enforces its own module rating on top, answering
+          <span className="font-mono"> -222</span> if we ever exceed it.
+        </div>
         <div className="grid grid-cols-2 gap-3">
           <Field label="Maximum Voltage (V)" value={limits.max_voltage_v.toFixed(1)} mono />
           <Field label="Maximum Current (A)" value={limits.max_current_a.toFixed(1)} mono />
-          <Field label="Maximum Power (W)" value={limits.max_power_w.toFixed(1)} mono />
-          <SelectField label="Allowed Output State" options={[limits.allowed_output_state, "OFF only (locked)"]} />
         </div>
       </Panel>
       <Panel className="p-4">
-        <div className="mb-3.5 text-[13px] font-semibold">Alarm Thresholds &amp; Safe Shutdown</div>
-        <div className="flex flex-col gap-2.5">
+        <div className="mb-1 flex items-center gap-2">
+          <span className="text-[13px] font-semibold">Alarm thresholds &amp; safe shutdown</span>
+          <span className="rounded border border-amber/40 px-1.5 py-0.5 font-mono text-[9px] font-semibold text-amber">
+            NOT ENFORCED
+          </span>
+        </div>
+        <div className="mb-3.5 text-[11px] leading-snug text-muted">
+          Declared, but nothing acts on them yet: no code compares a live reading against these
+          thresholds, and no automatic shutdown is armed. A scenario&apos;s own <b>Threshold Check</b> →{" "}
+          <b>Safe Shutdown</b> path is the working version of this rule today.
+        </div>
+        <div className="flex flex-col gap-2.5 opacity-70">
           <ThresholdRow label="Warning threshold · power" value={`${limits.warning_threshold_power_w} W`} color="#fbbf24" />
           <ThresholdRow label="Critical threshold · power" value={`${limits.critical_threshold_power_w} W`} color="#f87171" />
+          <div className="flex items-center justify-between rounded-md border border-line2 bg-bg px-2.5 py-2.5">
+            <span className="text-[12px] text-[#cfd6e2]">Maximum power</span>
+            <span className="font-mono text-[12px] text-ink">{limits.max_power_w.toFixed(1)} W</span>
+          </div>
+          <div className="flex items-center justify-between rounded-md border border-line2 bg-bg px-2.5 py-2.5">
+            <span className="text-[12px] text-[#cfd6e2]">Allowed output state</span>
+            <span className="font-mono text-[12px] text-ink">{limits.allowed_output_state}</span>
+          </div>
           <div className="flex items-center justify-between rounded-md border border-line2 bg-bg px-2.5 py-2.5">
             <span className="text-[12px] text-[#cfd6e2]">Safe shutdown rule</span>
             <span className="font-mono text-[12px] text-ink">{limits.safe_shutdown_rule}</span>
           </div>
+        </div>
+      </Panel>
+      <Panel className="col-span-2 p-4">
+        <div className="mb-1.5 text-[13px] font-semibold">Where these are set</div>
+        <div className="text-[11.5px] leading-relaxed text-muted">
+          All of them live in <span className="font-mono text-[#cfd6e2]">backend/app/data.py</span> under{" "}
+          <span className="font-mono text-[#cfd6e2]">OPERATIONAL_LIMITS</span>, and are read on start —
+          edit the file and restart the backend. They are deliberately not editable from the browser:
+          the voltage and current ceilings are the platform&apos;s last guard before a real output, so
+          raising them is a change that should go through the repository, not a form.
         </div>
       </Panel>
     </div>
@@ -803,13 +825,3 @@ function Field({ label, value, mono }: { label: string; value: string; mono?: bo
   );
 }
 
-function SelectField({ label, options }: { label: string; options: string[] }) {
-  return (
-    <div>
-      <label className="mb-1 block text-[10px] text-faint">{label}</label>
-      <select className="w-full rounded-md border border-line2 bg-bg px-2.5 py-2 text-[12px] text-ink">
-        {options.map((o) => <option key={o}>{o}</option>)}
-      </select>
-    </div>
-  );
-}

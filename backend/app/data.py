@@ -237,6 +237,12 @@ TERM_CMDS = [
 
 FP_MENU = ["Output On/Off", "Set Voltage", "Set Current Limit", "Mode FIX / SAS", "Clear Protection", "I/O Configuration"]
 
+# Who manual actions are attributed to in the audit log. The platform has no
+# sign-in yet, so every operator is this one account; defined here rather than
+# restated per router so the log cannot disagree with itself.
+DEFAULT_USER = "root"
+DEFAULT_ROLE = "Admin"
+
 OPERATIONAL_LIMITS = {
     "max_voltage_v": 32.0,
     "max_current_a": 6.0,
