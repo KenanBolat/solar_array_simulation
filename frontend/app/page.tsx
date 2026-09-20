@@ -33,12 +33,12 @@ export default function IntroPage() {
               GROUND SEGMENT · POWER TEST
             </div>
             <h1 className="mb-3 text-[40px] font-bold leading-[1.08] tracking-tight">
+              Powerlessness
+            </h1>
+            <p className="max-w-[560px] text-[16px] leading-relaxed text-muted">
               Solar Array Simulator
               <br />
               Control Platform
-            </h1>
-            <p className="max-w-[560px] text-[16px] leading-relaxed text-muted">
-              Monitor, control, and automate solar array simulator test scenarios across distributed laboratory racks.
             </p>
           </div>
         </div>
