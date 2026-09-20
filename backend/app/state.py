@@ -591,8 +591,14 @@ def delete_rack(db: Session, rack_id: str):
 
 
 def config_racks(db: Session):
-    return [{"id": r.id, "name": r.name, "loc": r.loc, "cap": r.cap, "unitsAssigned": len(r.units)}
-            for r in db.query(orm.Rack).all()]
+    # A slot holds a mainframe, and all of its channels share that slot, so counting
+    # units would show a 4-slot rack as full with two dual-channel instruments in it.
+    return [{"id": r.id, "name": r.name, "loc": r.loc, "cap": r.cap,
+             "unitsAssigned": len(r.units),
+             "instruments": len({instrument_name(u) for u in r.units}),
+             "slotsUsed": len({u.slot for u in r.units}),
+             "slotsFree": max(0, r.cap - len({u.slot for u in r.units}))}
+            for r in db.query(orm.Rack).order_by(orm.Rack.id).all()]
 
 
 def rack_slots(db: Session, rack_id: str):

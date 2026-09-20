@@ -1,6 +1,6 @@
 "use client";
 import type { Diagnosis } from "@/lib/types";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { usePoll } from "@/lib/useApi";
 import { usePageHeader } from "@/lib/header-context";
@@ -176,7 +176,7 @@ function RackConfigTab() {
                 <input value={edit.cap} onChange={(e) => setEdit({ ...edit, cap: e.target.value })}
                   className="w-full rounded-md border border-line2 bg-bg px-2.5 py-2 font-mono text-[12px] text-ink" />
               </div>
-              <Field label="Instruments Assigned" value={String(rack?.unitsAssigned ?? 0)} mono />
+              <Field label="Slots Used" value={`${rack?.slotsUsed ?? 0} of ${rack?.cap ?? 0} · ${rack?.instruments ?? 0} instrument(s), ${rack?.unitsAssigned ?? 0} channel(s)`} mono />
             </div>
             <div className="mt-3 flex gap-2">
               <Btn variant="primary" onClick={saveEdit}>Save changes</Btn>
@@ -189,7 +189,7 @@ function RackConfigTab() {
               <Field label="Rack Name" value={rack?.name ?? "—"} />
               <Field label="Location" value={rack?.loc || "—"} />
               <Field label="Capacity (slots)" value={String(rack?.cap ?? "—")} mono />
-              <Field label="Instruments Assigned" value={String(rack?.unitsAssigned ?? 0)} mono />
+              <Field label="Slots Used" value={`${rack?.slotsUsed ?? 0} of ${rack?.cap ?? 0} · ${rack?.instruments ?? 0} instrument(s), ${rack?.unitsAssigned ?? 0} channel(s)`} mono />
             </div>
             <div className="mt-3 flex items-center gap-2">
               <Btn onClick={() => rack && setEdit({ name: rack.name, loc: rack.loc ?? "", cap: String(rack.cap) })}>Edit rack</Btn>
@@ -271,7 +271,12 @@ function UnitsConfigTab() {
     reload();
   };
 
-  const rackOptions = (racks ?? []).length ? racks!.map((r) => r.id) : ["A"];
+  const rackList = racks ?? [];
+  // Follow the configured racks rather than assuming one called "A": a fleet may
+  // not have it, and a select whose value matches no option posts a dead rack id.
+  useEffect(() => {
+    if (rackList.length && !rackList.some((r) => r.id === rack)) setRack(rackList[0].id);
+  }, [racks, rack]);
 
   const addInstrument = async () => {
     const trimmed = name.trim();
@@ -531,7 +536,12 @@ function UnitsConfigTab() {
               <label className="mb-1 block text-[10px] text-faint">Rack</label>
               <select value={rack} onChange={(e) => setRack(e.target.value)}
                 className="w-full rounded-md border border-line2 bg-bg px-2.5 py-2 text-[12px] text-ink">
-                {rackOptions.map((r) => <option key={r} value={r}>{r}</option>)}
+                {rackList.map((r) => (
+                  <option key={r.id} value={r.id} disabled={r.slotsFree === 0}>
+                    {r.name} · {r.slotsFree === 0 ? "full" : `${r.slotsFree} free`}
+                  </option>
+                ))}
+                {!rackList.length && <option value="">loading racks…</option>}
               </select>
             </div>
             <div>
