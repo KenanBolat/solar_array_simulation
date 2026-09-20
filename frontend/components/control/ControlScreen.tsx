@@ -1,12 +1,14 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { api } from "@/lib/api";
 import { usePoll } from "@/lib/useApi";
 import { usePageHeader } from "@/lib/header-context";
 import { useUi } from "@/lib/ui-context";
 import { Btn, Eyebrow, Panel, SEV_COLOR, STATUS_COLOR, HIST_COLOR } from "@/components/ui";
-import { Sparkline } from "@/components/Sparkline";
+import { ChartSyncProvider } from "@/components/charts/ChartSync";
+import { TimeChart, seriesColor } from "@/components/charts/TimeChart";
 import { TerminalModal } from "./TerminalModal";
 import { FrontPanelModal } from "./FrontPanelModal";
 
@@ -22,6 +24,8 @@ export function ControlScreen({ unitName }: { unitName: string }) {
   const [sasInput, setSasInput] = useState({ isc: "4.6", imp: "4.2", vmp: "28.0", voc: "32.0" });
   const [presetId, setPresetId] = useState<number | null>(null);
 
+  const router = useRouter();
+  const { data: allUnits } = usePoll(() => api.units(), 10000);
   const { data: presetData } = usePoll(() => api.presets(), 15000);
   const { data: unit, reload: reloadUnit } = usePoll(() => api.unit(unitName), 3000, [unitName]);
   const { data: telemetry, reload: reloadTelemetry } = usePoll(() => api.telemetry(unitName, range), 4000, [unitName, range]);
@@ -150,7 +154,18 @@ export function ControlScreen({ unitName }: { unitName: string }) {
       <div className="mb-4 flex items-center justify-between">
         <div className="flex items-center gap-3">
           <span className="h-[11px] w-[11px] rounded-full" style={{ background: statusColor, boxShadow: `0 0 10px ${statusColor}66` }} />
-          <h2 className="m-0 font-mono text-[20px] font-bold">{unit.label}</h2>
+          <select
+            value={unitName}
+            onChange={(e) => router.push(`/control/${e.target.value}`)}
+            title="Switch instrument / channel"
+            className="m-0 cursor-pointer rounded-md border border-line2 bg-panel2 px-2.5 py-1.5 font-mono text-[18px] font-bold text-ink"
+          >
+            {(allUnits ?? []).map((u) => (
+              <option key={u.name} value={u.name}>
+                {u.label}{u.enabled ? "" : " · disabled"}{u.enabled && !u.online ? " · offline" : ""}
+              </option>
+            ))}
+          </select>
           <span className="font-mono text-[12px] text-muted">{unit.pos}</span>
         </div>
         <div className="flex items-center gap-2.5">
@@ -278,20 +293,18 @@ export function ControlScreen({ unitName }: { unitName: string }) {
                 ))}
               </div>
             </div>
-            <div className="flex flex-col gap-2.5">
-              <div>
-                <div className="mb-1 font-mono text-[10px] text-muted">VOLTAGE · V</div>
-                <Sparkline values={telemetry?.v ?? []} color="#2dd4ee" unit=" V" decimals={2} />
+            <ChartSyncProvider>
+              <div className="flex flex-col gap-3">
+                {([
+                  { k: "v", title: "Voltage", unit: " V", dec: 3, color: seriesColor(0) },
+                  { k: "i", title: "Current", unit: " A", dec: 3, color: seriesColor(2) },
+                  { k: "p", title: "Power", unit: " W", dec: 2, color: seriesColor(3) },
+                ] as const).map(({ k, title, unit: u, dec, color }) => (
+                  <TimeChart key={k} title={title} unit={u} decimals={dec} height={124}
+                    series={[{ key: k, label: unit.label, color, ts: telemetry?.ts ?? [], values: telemetry?.[k] ?? [] }]} />
+                ))}
               </div>
-              <div>
-                <div className="mb-1 font-mono text-[10px] text-muted">CURRENT · A</div>
-                <Sparkline values={telemetry?.i ?? []} color="#34d399" unit=" A" decimals={2} />
-              </div>
-              <div>
-                <div className="mb-1 font-mono text-[10px] text-muted">POWER · W</div>
-                <Sparkline values={telemetry?.p ?? []} color="#fbbf24" unit=" W" decimals={1} />
-              </div>
-            </div>
+            </ChartSyncProvider>
           </Panel>
 
           <div className="grid grid-cols-[1.6fr_1fr] gap-3.5">

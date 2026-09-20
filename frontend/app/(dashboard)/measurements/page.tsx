@@ -4,24 +4,12 @@ import { api } from "@/lib/api";
 import { usePoll } from "@/lib/useApi";
 import { usePageHeader } from "@/lib/header-context";
 import { Btn, Chip, Panel, STATUS_COLOR } from "@/components/ui";
+import { ChartSyncProvider } from "@/components/charts/ChartSync";
+import { TimeChart, seriesColor, type ChartSeries } from "@/components/charts/TimeChart";
 import { useUi } from "@/lib/ui-context";
 
 const RANGES = ["5 min", "30 min", "1 hour", "24 hours"];
 const Q_COLOR: Record<string, string> = { ok: "#34d399", no_reading: "#f87171" };
-
-function seriesToSegments(values: (number | null)[], lo: number, hi: number, w: number, h: number): string[] {
-  const segments: string[][] = [[]];
-  values.forEach((v, idx) => {
-    if (v == null) {
-      if (segments[segments.length - 1].length) segments.push([]);
-      return;
-    }
-    const x = (idx / Math.max(1, values.length - 1)) * w;
-    const y = h - ((v - lo) / (hi - lo || 1)) * h;
-    segments[segments.length - 1].push(`${x.toFixed(1)},${Math.max(2, Math.min(h - 2, y)).toFixed(1)}`);
-  });
-  return segments.filter((s) => s.length).map((s) => s.join(" "));
-}
 
 export default function MeasurementsPage() {
   usePageHeader("Measurements", "Telemetry explorer · every channel of every mainframe");
@@ -58,6 +46,19 @@ export default function MeasurementsPage() {
   const toggle = (name: string) =>
     setSelected((s) => (s.includes(name) ? s.filter((x) => x !== name) : [...s, name]));
   const allSelected = pickable.length > 0 && pickable.every((u) => selected.includes(u.name));
+
+  // Identity colour, keyed to the channel's position in the configured fleet —
+  // so a channel keeps its colour whatever else is selected or offline.
+  const colorFor = (name: string) => seriesColor(Math.max(0, pickable.findIndex((u) => u.name === name)));
+
+  const chartSeries = (k: "v" | "i" | "p"): ChartSeries[] =>
+    (meas?.series ?? []).map((s) => ({
+      key: s.name,
+      label: (units ?? []).find((u) => u.name === s.name)?.label ?? s.name,
+      color: colorFor(s.name),
+      ts: s.ts ?? [],
+      values: s[k],
+    }));
 
   return (
     <div className="p-5">
@@ -116,40 +117,14 @@ export default function MeasurementsPage() {
       <div className="grid grid-cols-[1fr_340px] items-start gap-4">
         <div className="flex flex-col gap-3.5">
           <Panel className="p-3.5">
-            <div className="mb-3 flex items-center justify-between">
-              <div className="text-[12px] font-semibold">Voltage · Current · Power</div>
-              <div className="flex gap-3">
-                {(meas?.series ?? []).map((s) => (
-                  <div key={s.name} className="flex items-center gap-1.5">
-                    <span className="h-2.5 w-2.5 rounded-sm" style={{ background: STATUS_COLOR[s.statusColor] }} />
-                    <span className="font-mono text-[10.5px] text-muted">
-                      {(units ?? []).find((u) => u.name === s.name)?.label ?? s.name}
-                    </span>
-                  </div>
-                ))}
+            <div className="mb-2.5 text-[12px] font-semibold">Voltage · Current · Power</div>
+            <ChartSyncProvider>
+              <div className="flex flex-col gap-3">
+                <TimeChart title="Voltage" unit=" V" decimals={3} series={chartSeries("v")} height={136} />
+                <TimeChart title="Current" unit=" A" decimals={3} series={chartSeries("i")} height={136} />
+                <TimeChart title="Power" unit=" W" decimals={2} series={chartSeries("p")} height={136} />
               </div>
-            </div>
-            <div className="flex flex-col gap-2.5">
-              {(["v", "i", "p"] as const).map((k) => (
-                <div key={k}>
-                  <div className="mb-1 font-mono text-[9.5px] text-faint">{k === "v" ? "VOLTAGE · V" : k === "i" ? "CURRENT · A" : "POWER · W"}</div>
-                  <div className="relative">
-                    <svg viewBox="0 0 560 80" preserveAspectRatio="none" className="h-[84px] w-full rounded-md border border-line bg-[#0e1117]">
-                      {(meas?.series ?? []).map((s) => {
-                        const values = s[k];
-                        const real = values.filter((v): v is number => v != null);
-                        const min = Math.min(...real, 0), max = Math.max(...real, 1);
-                        const pad = (max - min) * 0.1 || 1;
-                        const segments = seriesToSegments(values, min - pad, max + pad, 560, 80);
-                        return segments.map((points, idx) => (
-                          <polyline key={`${s.name}-${idx}`} points={points} fill="none" stroke={STATUS_COLOR[s.statusColor]} strokeWidth={1.6} />
-                        ));
-                      })}
-                    </svg>
-                  </div>
-                </div>
-              ))}
-            </div>
+            </ChartSyncProvider>
           </Panel>
 
           <Panel className="overflow-hidden">
@@ -164,8 +139,10 @@ export default function MeasurementsPage() {
               const u = (units ?? []).find((x) => x.name === m.unit);
               return (
                 <div key={idx} className="grid items-center gap-2.5 border-b border-[#161b24] px-3.5 py-2 font-mono text-[11px]" style={{ gridTemplateColumns: "112px 66px 1fr 1fr 1fr 52px 66px" }}>
-                  <span className="font-bold" style={{ color: u ? STATUS_COLOR[u.statusColor] : "#e6eaf2" }}
-                    title={u ? u.mainframe : undefined}>{u?.label ?? m.unit}</span>
+                  <span className="flex items-center gap-1.5 font-bold" title={u ? u.mainframe : undefined}>
+                    <span className="h-2 w-2 flex-none rounded-sm" style={{ background: colorFor(m.unit) }} />
+                    {u?.label ?? m.unit}
+                  </span>
                   <span className="text-muted">{m.time}</span>
                   <span>{m.v != null ? <>{m.v.toFixed(3)}<span className="text-faint"> V</span></> : <span className="text-faint">—</span>}</span>
                   <span>{m.i != null ? <>{m.i.toFixed(3)}<span className="text-faint"> A</span></> : <span className="text-faint">—</span>}</span>

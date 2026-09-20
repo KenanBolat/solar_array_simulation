@@ -439,6 +439,8 @@ def telemetry(db: Session, unit_name: str, rng: str):
             .order_by(orm.Measurement.ts.asc()).all())
     return {
         "t": rng, "n": len(rows),
+        # epoch milliseconds — the charts need a real time axis, not sample index
+        "ts": [int(r.ts.replace(tzinfo=timezone.utc).timestamp() * 1000) for r in rows],
         "v": [r.voltage for r in rows], "i": [r.current for r in rows], "p": [r.power for r in rows],
     }
 
@@ -455,12 +457,14 @@ def measurements(db: Session, unit_names: list[str], rng: str):
                 .order_by(orm.Measurement.ts.asc()).all())
         _, color = unit_status(u) if u else (None, "cyan")
         series.append({
-            "name": name, "statusColor": color,
+            "name": name, "label": unit_label(u) if u else name, "statusColor": color,
+            "ts": [int(r.ts.replace(tzinfo=timezone.utc).timestamp() * 1000) for r in rows],
             "v": [r.voltage for r in rows], "i": [r.current for r in rows], "p": [r.power for r in rows],
         })
         for r in reversed(rows[-3:]):
             rows_out.append({
                 "unit": name, "time": r.ts.strftime("%H:%M:%S"),
+                "ts": int(r.ts.replace(tzinfo=timezone.utc).timestamp() * 1000),
                 "v": round(r.voltage, 3) if r.voltage is not None else None,
                 "i": round(r.current, 3) if r.current is not None else None,
                 "p": round(r.power, 2) if r.power is not None else None,
@@ -617,6 +621,58 @@ def config_units(db: Session):
             "poll": f"{u.poll_ms} ms", "enabled": u.enabled, "online": u.online,
         })
     return out
+
+
+def create_rack(db: Session, rack_id: str, name: str, loc: str = "", cap: int = 4):
+    rack_id = (rack_id or "").strip().upper()
+    if not rack_id:
+        raise ValueError("Rack id is required")
+    if len(rack_id) != 1 or not rack_id.isalnum():
+        # rack_slots encodes a slot as "<rack_id><slot>", so the id must stay one character
+        raise ValueError("Rack id must be a single letter or digit, e.g. B")
+    if db.get(orm.Rack, rack_id):
+        raise ValueError(f"Rack {rack_id} already exists")
+    if not 1 <= cap <= 16:
+        raise ValueError("Capacity must be between 1 and 16 slots")
+    rack = orm.Rack(id=rack_id, name=name.strip() or f"RACK-{rack_id}", loc=loc.strip(), cap=cap)
+    db.add(rack)
+    db.commit()
+    return rack
+
+
+def update_rack(db: Session, rack_id: str, name: str | None, loc: str | None, cap: int | None):
+    rack = db.get(orm.Rack, rack_id)
+    if not rack:
+        return None
+    if name is not None:
+        if not name.strip():
+            raise ValueError("Rack name cannot be empty")
+        rack.name = name.strip()
+    if loc is not None:
+        rack.loc = loc.strip()
+    if cap is not None:
+        if not 1 <= cap <= 16:
+            raise ValueError("Capacity must be between 1 and 16 slots")
+        highest = max((u.slot for u in rack.units), default=0)
+        if cap < highest:
+            raise ValueError(f"Capacity {cap} is below slot {highest}, which is occupied — move that instrument first")
+        rack.cap = cap
+    db.commit()
+    return rack
+
+
+def delete_rack(db: Session, rack_id: str):
+    rack = db.get(orm.Rack, rack_id)
+    if not rack:
+        return False
+    if rack.units:
+        names = sorted({instrument_name(u) for u in rack.units})
+        raise ValueError(f"Rack {rack.name} still holds {', '.join(names)} — move or delete them first")
+    if db.query(orm.Rack).count() <= 1:
+        raise ValueError("At least one rack must remain")
+    db.delete(rack)
+    db.commit()
+    return True
 
 
 def config_racks(db: Session):

@@ -163,6 +163,8 @@ export interface RunDetail extends Run {
 export interface Telemetry {
   t: string;
   n: number;
+  /** epoch milliseconds, one per sample */
+  ts: number[];
   v: (number | null)[];
   i: (number | null)[];
   p: (number | null)[];
@@ -170,7 +172,10 @@ export interface Telemetry {
 
 export interface MeasurementSeries {
   name: string;
+  label: string;
   statusColor: StatusColor;
+  /** epoch milliseconds, one per sample */
+  ts: number[];
   v: (number | null)[];
   i: (number | null)[];
   p: (number | null)[];

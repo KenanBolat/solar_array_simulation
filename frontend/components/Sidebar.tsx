@@ -23,7 +23,8 @@ export function Sidebar() {
 
   return (
     <aside className="flex h-screen w-[218px] flex-none flex-col border-r border-line bg-[#0e1117]">
-      <div className="border-b border-line px-4 pb-3.5 pt-[18px]">
+      <Link href="/" title="Back to the landing page"
+        className="block border-b border-line px-4 pb-3.5 pt-[18px] hover:bg-[#ffffff06]">
         <div className="flex items-center gap-2.5">
           <div className="flex h-[26px] w-[26px] items-center justify-center rounded-md border border-cyan/40 bg-cyan/10">
             <div className="h-[11px] w-[11px] rounded-sm border-2 border-cyan" />
@@ -33,7 +34,7 @@ export function Sidebar() {
             <div className="font-mono text-[9.5px] tracking-wider text-faint">PLATFORM v0.1</div>
           </div>
         </div>
-      </div>
+      </Link>
       <nav className="flex-1 overflow-auto py-2">
         {navItems.map((item, idx) => {
           const active = item.label === "Simulator Control" ? pathname.startsWith("/control") : pathname === item.href;

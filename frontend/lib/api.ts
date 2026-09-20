@@ -99,6 +99,11 @@ export const api = {
   runScenario: (id: string) => j<RunDetail>(`/api/scenarios/${id}/run`, { method: "POST" }),
 
   configRacks: () => j<any[]>("/api/config/racks"),
+  createRack: (body: { id: string; name?: string; loc?: string; cap?: number }) =>
+    j<any>("/api/config/racks", { method: "POST", body: JSON.stringify(body) }),
+  updateRack: (id: string, body: { name?: string; loc?: string; cap?: number }) =>
+    j<any>(`/api/config/racks/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  deleteRack: (id: string) => j<{ ok: boolean }>(`/api/config/racks/${id}`, { method: "DELETE" }),
   configUnits: () => j<any[]>("/api/config/units"),
   configLimits: () => j<any>("/api/config/limits"),
   configProfiles: () => j<SasProfile[]>("/api/config/profiles"),

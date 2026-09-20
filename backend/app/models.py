@@ -54,6 +54,19 @@ class AckRequest(BaseModel):
     pass
 
 
+class CreateRackRequest(BaseModel):
+    id: str
+    name: str = ""
+    loc: str = ""
+    cap: int = 4
+
+
+class UpdateRackRequest(BaseModel):
+    name: Optional[str] = None
+    loc: Optional[str] = None
+    cap: Optional[int] = None
+
+
 class AssignRequest(BaseModel):
     slot: str
     unitName: str

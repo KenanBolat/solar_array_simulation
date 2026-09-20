@@ -48,17 +48,66 @@ export default function ConfigPage() {
 }
 
 function RackConfigTab() {
-  const { data: racks } = usePoll(() => api.configRacks(), 8000);
-  const rack = (racks ?? [])[0];
+  const { notify, ask } = useUi();
+  const { data: racks, reload: reloadRacks } = usePoll(() => api.configRacks(), 8000);
+  const [selected, setSelected] = useState<string | null>(null);
+  const rackList = racks ?? [];
+  const rack = rackList.find((r) => r.id === selected) ?? rackList[0];
   const rackId = rack?.id ?? "A";
   const { data: editor, reload } = usePoll(() => api.rackEditor(rackId), 4000, [rackId]);
   const [dragging, setDragging] = useState<string | null>(null);
 
+  const [showAdd, setShowAdd] = useState(false);
+  const [newRack, setNewRack] = useState({ id: "", name: "", loc: "", cap: "4" });
+  const [edit, setEdit] = useState<{ name: string; loc: string; cap: string } | null>(null);
+
   const onDrop = async (slot: string) => {
     if (!dragging) return;
-    await api.assignUnit(slot, dragging);
+    try { await api.assignUnit(slot, dragging); }
+    catch (e) { notify(e instanceof Error ? e.message : "Move failed"); }
     setDragging(null);
     reload();
+  };
+
+  const addRack = async () => {
+    try {
+      const r = await api.createRack({
+        id: newRack.id.trim(), name: newRack.name.trim(), loc: newRack.loc.trim(),
+        cap: Number(newRack.cap) || 4,
+      });
+      notify(`Added ${r.name}`);
+      setNewRack({ id: "", name: "", loc: "", cap: "4" });
+      setShowAdd(false);
+      setSelected(r.id);
+      reloadRacks();
+    } catch (e) {
+      notify(e instanceof Error ? e.message : "Could not add rack");
+    }
+  };
+
+  const saveEdit = async () => {
+    if (!edit || !rack) return;
+    try {
+      await api.updateRack(rack.id, { name: edit.name, loc: edit.loc, cap: Number(edit.cap) || rack.cap });
+      notify(`Updated ${edit.name}`);
+      setEdit(null);
+      reloadRacks();
+    } catch (e) {
+      notify(e instanceof Error ? e.message : "Could not update rack");
+    }
+  };
+
+  const removeRack = () => {
+    if (!rack) return;
+    ask({
+      title: `Delete ${rack.name}`,
+      message: `Removes this rack. It must be empty first — instruments are not deleted by this.`,
+      confirmLabel: "Delete rack", danger: true,
+      onConfirm: async () => {
+        try { await api.deleteRack(rack.id); notify(`Deleted ${rack.name}`); setSelected(null); reloadRacks(); }
+        catch (e) { notify(e instanceof Error ? e.message : "Could not delete rack"); }
+      },
+    });
   };
 
   return (
@@ -66,15 +115,89 @@ function RackConfigTab() {
       <Panel className="p-4">
         <div className="mb-3.5 flex items-center justify-between">
           <div className="text-[13px] font-semibold">Rack Configuration</div>
-          <Btn variant="primary">+ Add Rack</Btn>
+          <div className="flex items-center gap-2">
+            {rackList.length > 1 && (
+              <select value={rackId} onChange={(e) => { setSelected(e.target.value); setEdit(null); }}
+                className="rounded-md border border-line2 bg-bg px-2 py-1.5 font-mono text-[11px] text-ink">
+                {rackList.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+              </select>
+            )}
+            <Btn variant="primary" onClick={() => setShowAdd((s) => !s)}>{showAdd ? "Cancel" : "+ Add Rack"}</Btn>
+          </div>
         </div>
-        <div className="grid grid-cols-2 gap-3">
-          <Field label="Rack Name" value={rack?.name ?? "—"} />
-          <Field label="Location" value={rack?.loc ?? ""} />
-          <Field label="Capacity (slots)" value={String(rack?.cap ?? "—")} mono />
-          <Field label="Units Assigned" value={String(rack?.unitsAssigned ?? 0)} mono />
-        </div>
-        <div className="mt-3.5 text-[11px] text-muted">Drag unassigned units from the palette into rack slots →</div>
+
+        {showAdd && (
+          <div className="mb-3.5 rounded-md border border-line2 bg-bg p-3">
+            <div className="mb-2 text-[11px] text-muted">New rack</div>
+            <div className="grid grid-cols-4 gap-2.5">
+              <div>
+                <label className="mb-1 block text-[10px] text-faint">Id (one character)</label>
+                <input value={newRack.id} maxLength={1} onChange={(e) => setNewRack((r) => ({ ...r, id: e.target.value }))}
+                  placeholder="B" className="w-full rounded-md border border-line2 bg-panel px-2.5 py-2 font-mono text-[12px] text-ink" />
+              </div>
+              <div>
+                <label className="mb-1 block text-[10px] text-faint">Name</label>
+                <input value={newRack.name} onChange={(e) => setNewRack((r) => ({ ...r, name: e.target.value }))}
+                  placeholder="RACK-B" className="w-full rounded-md border border-line2 bg-panel px-2.5 py-2 font-mono text-[12px] text-ink" />
+              </div>
+              <div>
+                <label className="mb-1 block text-[10px] text-faint">Location</label>
+                <input value={newRack.loc} onChange={(e) => setNewRack((r) => ({ ...r, loc: e.target.value }))}
+                  placeholder="Lab 2 · Bay 2" className="w-full rounded-md border border-line2 bg-panel px-2.5 py-2 text-[12px] text-ink" />
+              </div>
+              <div>
+                <label className="mb-1 block text-[10px] text-faint">Capacity</label>
+                <input value={newRack.cap} onChange={(e) => setNewRack((r) => ({ ...r, cap: e.target.value }))}
+                  className="w-full rounded-md border border-line2 bg-panel px-2.5 py-2 font-mono text-[12px] text-ink" />
+              </div>
+            </div>
+            <Btn variant="primary" className="mt-2.5" onClick={addRack}>Create rack</Btn>
+            <div className="mt-2 text-[10px] text-faint">
+              The id is one letter or digit and identifies slots internally (<span className="font-mono">B1</span>, <span className="font-mono">B2</span>…); a slot holds one mainframe with all its channels.
+            </div>
+          </div>
+        )}
+
+        {edit ? (
+          <>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="mb-1 block text-[10px] text-faint">Rack Name</label>
+                <input value={edit.name} onChange={(e) => setEdit({ ...edit, name: e.target.value })}
+                  className="w-full rounded-md border border-line2 bg-bg px-2.5 py-2 text-[12px] text-ink" />
+              </div>
+              <div>
+                <label className="mb-1 block text-[10px] text-faint">Location</label>
+                <input value={edit.loc} onChange={(e) => setEdit({ ...edit, loc: e.target.value })}
+                  className="w-full rounded-md border border-line2 bg-bg px-2.5 py-2 text-[12px] text-ink" />
+              </div>
+              <div>
+                <label className="mb-1 block text-[10px] text-faint">Capacity (slots)</label>
+                <input value={edit.cap} onChange={(e) => setEdit({ ...edit, cap: e.target.value })}
+                  className="w-full rounded-md border border-line2 bg-bg px-2.5 py-2 font-mono text-[12px] text-ink" />
+              </div>
+              <Field label="Instruments Assigned" value={String(rack?.unitsAssigned ?? 0)} mono />
+            </div>
+            <div className="mt-3 flex gap-2">
+              <Btn variant="primary" onClick={saveEdit}>Save changes</Btn>
+              <Btn onClick={() => setEdit(null)}>Cancel</Btn>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Rack Name" value={rack?.name ?? "—"} />
+              <Field label="Location" value={rack?.loc || "—"} />
+              <Field label="Capacity (slots)" value={String(rack?.cap ?? "—")} mono />
+              <Field label="Instruments Assigned" value={String(rack?.unitsAssigned ?? 0)} mono />
+            </div>
+            <div className="mt-3 flex items-center gap-2">
+              <Btn onClick={() => rack && setEdit({ name: rack.name, loc: rack.loc ?? "", cap: String(rack.cap) })}>Edit rack</Btn>
+              <Btn variant="danger" onClick={removeRack}>Delete rack</Btn>
+            </div>
+          </>
+        )}
+        <div className="mt-3.5 text-[11px] text-muted">Drag instruments from the palette into rack slots →</div>
       </Panel>
 
       <Panel className="p-3.5">
