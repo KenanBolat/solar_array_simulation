@@ -60,6 +60,8 @@ export default function ScenarioBuilderPage() {
   // keeps the newest positions reachable from the mouseup closure
   const posRef = useRef(localPos);
   posRef.current = localPos;
+  // last elapsed the server reported, paired with the local instant it arrived
+  const clock = useRef({ server: -1, local: 0 });
 
   const load = useCallback(async () => {
     try { setGraph(await api.scenario(SCENARIO_ID)); }
@@ -233,11 +235,29 @@ export default function ScenarioBuilderPage() {
     catch (e) { notify(e instanceof Error ? e.message : "Abort failed"); }
   };
 
-  const elapsed = runView?.startedMs
-    ? (runView.endedMs ?? Date.now()) - runView.startedMs
-    : 0;
-  const estimate = Math.max(runView?.estMs ?? graph.estMs, elapsed);
-  const pct = estimate > 0 ? Math.min(100, (elapsed / estimate) * 100) : 0;
+  // Elapsed comes from the server and is carried forward locally between polls, so
+  // the readout never depends on this browser's clock agreeing with the backend's.
+  if (runView && runView.elapsedMs !== clock.current.server) {
+    clock.current = { server: runView.elapsedMs, local: performance.now() };
+  }
+  const elapsed = !runView
+    ? 0
+    : runView.endedMs
+      ? runView.elapsedMs
+      : clock.current.server + (performance.now() - clock.current.local);
+
+  const estimate = runView?.estMs || graph.estMs;
+  const done = !!runView && runView.status !== "Running" && runView.status !== "Queued";
+  const overrun = !done && elapsed > estimate;
+  // The bar's time axis: the estimate while the run is live (stretching if it
+  // overruns), the real duration once it has finished — so the step marks always
+  // spread across exactly the span the bar is showing.
+  const span = Math.max(done ? elapsed : Math.max(estimate, elapsed), 1);
+  // A finished run reads 100%. A live one stops just short, so a bar that has
+  // caught up with the estimate never looks like a run that has ended.
+  const pct = done ? 100 : Math.min(99, (elapsed / span) * 100);
+  const barColor = !runView || !done ? "#fbbf24"
+    : runView.status === "Completed" ? "#34d399" : "#f87171";
 
   const canRun = targetActive && graph.validation.ok && !isLive;
   const runBlockedWhy = !targetActive
@@ -279,15 +299,31 @@ export default function ScenarioBuilderPage() {
             <span>
               {isLive ? "running" : runView.status.toLowerCase()}
               {runView.currentNode && byId[runView.currentNode] ? ` · ${byId[runView.currentNode].label}` : ""}
+              {isLive && ` · step ${runView.stepsDone + 1} of ${runView.stepsTotal}`}
+              {done && ` · ${runView.stepsDone} of ${runView.stepsTotal} blocks run`}
             </span>
-            <span>
-              {fmtDur(elapsed)} elapsed{runView.endedMs ? "" : ` of ~${fmtDur(estimate)} estimated`}
-              {runView.endedMs ? ` · finished ${runView.finished}` : ""}
+            <span style={{ color: overrun ? "#fbbf24" : undefined }}>
+              {fmtDur(elapsed)} elapsed
+              {done
+                ? ` · finished ${runView.finished}`
+                : overrun
+                  ? ` · past the ~${fmtDur(estimate)} estimate`
+                  : ` of ~${fmtDur(estimate)} estimated`}
             </span>
           </div>
-          <div className="relative h-[6px] overflow-hidden rounded-full bg-[#1b2230]">
+          <div className="relative h-[6px] rounded-full bg-[#1b2230]">
             <div className="absolute inset-y-0 left-0 rounded-full transition-[width] duration-200"
-              style={{ width: `${pct}%`, background: runView.status === "Failed" || runView.status === "Aborted" ? "#f87171" : isLive ? "#fbbf24" : "#34d399" }} />
+              style={{ width: `${pct}%`, background: barColor }} />
+            {/* where each step actually ran, so the bar reads as a timeline */}
+            {runView.events.map((ev, i) =>
+              ev.atMs === null || !byId[ev.node] ? null : (
+                <span key={i} title={`${byId[ev.node].label} · ${fmtDur(ev.atMs)}`}
+                  className="absolute top-[-2px] h-[10px] w-[2px] rounded-full"
+                  style={{
+                    left: `${Math.min(100, (ev.atMs / span) * 100)}%`,
+                    background: ev.lvl === "err" ? "#f87171" : "#ffffff55",
+                  }} />
+              ))}
           </div>
           <div className="mt-1 flex items-center gap-3 font-mono text-[9px] text-faint">
             {(["ready", "running", "done", "error"] as NodeState[]).map((s) => (
@@ -295,6 +331,9 @@ export default function ScenarioBuilderPage() {
                 <span className="h-1.5 w-1.5 rounded-full" style={{ background: STATE_STYLE[s].dot }} />{STATE_STYLE[s].label}
               </span>
             ))}
+            <span className="flex items-center gap-1">
+              <span className="h-[8px] w-[2px] rounded-full bg-[#ffffff55]" />each step
+            </span>
           </div>
         </div>
       )}

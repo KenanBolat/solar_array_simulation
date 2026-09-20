@@ -699,15 +699,28 @@ def run_view(db: Session, run_id: str) -> dict | None:
         return None
     events = (db.query(orm.ScenarioRunEvent).filter(orm.ScenarioRunEvent.run_id == run_id)
               .order_by(orm.ScenarioRunEvent.id.asc()).all())
+    states = json.loads(run.node_states or "{}")
+    # Elapsed is measured here, against the clock that stamped started_ms. A browser
+    # subtracting started_ms from its own Date.now() reads nonsense whenever the two
+    # machines' clocks differ, which on a lab LAN they routinely do.
+    elapsed_ms = 0
+    if run.started_ms:
+        elapsed_ms = max(0, (run.ended_ms or _ms()) - run.started_ms)
     return {
         "id": run.id, "scenario": run.scenario, "scenarioId": run.scenario_id, "version": run.version,
         "status": run.status, "progress": run.progress, "targets": run.targets.split(",") if run.targets else [],
         "by": run.by, "started": run.started, "finished": run.finished, "dur": run.dur,
         "currentNode": run.current_node or None,
-        "nodeStates": json.loads(run.node_states or "{}"),
+        "nodeStates": states,
         "startedMs": run.started_ms, "endedMs": run.ended_ms, "estMs": run.est_ms,
-        "events": [{"t": e.t, "node": e.node, "lvl": e.lvl, "m": e.m,
-                     "scpi": e.scpi, "resp": e.response, "lat": e.latency_ms} for e in events],
+        "elapsedMs": elapsed_ms,
+        "stepsDone": sum(1 for v in states.values() if v in (DONE, ERROR)),
+        "stepsTotal": len(states),
+        "events": [{"t": e.t, "node": e.node, "lvl": e.lvl, "m": e.m, "scpi": e.scpi,
+                     "resp": e.response, "lat": e.latency_ms,
+                     # offset from the run's start, so the strip can mark where each step ran
+                     "atMs": max(0, e.ts_ms - run.started_ms) if e.ts_ms and run.started_ms else None}
+                    for e in events],
     }
 
 

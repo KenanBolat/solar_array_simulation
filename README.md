@@ -277,8 +277,15 @@ Only the steps that actually took a reading carry one.
 **Running.** Each block is dispatched as real SCPI, confirmed by readback and written to
 the audit log. While the run is live:
 
-- a read-only strip at the top shows elapsed time against the estimate and names the
-  block currently executing;
+- a read-only strip at the top shows elapsed time against the estimate, names the block
+  currently executing and counts the steps taken. Its bar is a timeline: a tick marks
+  where each step actually ran (hover for the block and its offset), red for a step that
+  errored. While the run is live the axis is the estimate and the fill stops at 99%, so a
+  bar that has caught up never looks like a finished run — if the run passes its estimate
+  the label says so and the clock keeps counting. On completion the axis becomes the real
+  duration, the bar fills, and it turns green for a completed run or red for a failed or
+  aborted one. Elapsed is measured on the server, so the readout is correct on a machine
+  whose clock differs from the backend host's;
 - each block is colour-coded — **green** ready, **yellow** running, **grey** finished,
   **red** errored, dimmed for a branch not taken;
 - the panel at the bottom lists every command the run has sent, with the exact SCPI

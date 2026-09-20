@@ -264,7 +264,15 @@ export interface ScenarioRunView {
   startedMs: number | null;
   endedMs: number | null;
   estMs: number;
-  events: { t: string; node: string; lvl: RunEvent["lvl"]; m: string; scpi: string; resp: string; lat: number }[];
+  /** Measured on the server, against the clock that stamped startedMs. */
+  elapsedMs: number;
+  stepsDone: number;
+  stepsTotal: number;
+  events: {
+    t: string; node: string; lvl: RunEvent["lvl"]; m: string; scpi: string; resp: string; lat: number;
+    /** ms from the run's start, or null for a step that was never stamped. */
+    atMs: number | null;
+  }[];
 }
 
 export interface ScenarioGraph {
