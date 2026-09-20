@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from . import orm, state
+from . import orm, scenario, state
 from .db import backfill_defaults, engine, ensure_columns, session_scope
 from .diagnostics import host_addresses
 from .emulator import demo_emulators
@@ -31,6 +31,7 @@ async def lifespan(app: FastAPI):
     with session_scope() as db:
         seed_if_empty(db)
         state.seed_presets(db)
+        scenario.seed_default(db)
     servers = []
     if _emulators_wanted():
         servers = [s for s in [await e.serve() for e in EMULATORS] if s]

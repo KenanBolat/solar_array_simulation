@@ -1,6 +1,6 @@
 import type {
-  Alarm, Diagnosis, Health, HistoryRow, Measurements, Rack, RunDetail, Run, ScenarioGraph, NodeProps,
-  Preset, SasCurve, SasProfile, Summary, Telemetry, Unit, UnitDetail,
+  Alarm, Diagnosis, Health, HistoryRow, Measurements, Rack, RunDetail, Run, ScenarioEdge, ScenarioGraph,
+  ScenarioNode, ScenarioRunView, Preset, SasCurve, SasProfile, Summary, Telemetry, Unit, UnitDetail,
 } from "./types";
 
 async function j<T>(path: string, init?: RequestInit): Promise<T> {
@@ -91,12 +91,22 @@ export const api = {
 
   runs: (filter: string) => j<Run[]>(`/api/runs?filter=${filter}`),
   run: (id: string) => j<RunDetail>(`/api/runs/${id}`),
-  pauseRun: (id: string) => j<{ ok: boolean; message: string }>(`/api/runs/${id}/pause`, { method: "POST" }),
   abortRun: (id: string) => j<{ ok: boolean; message: string }>(`/api/runs/${id}/abort`, { method: "POST" }),
 
   scenario: (id: string) => j<ScenarioGraph>(`/api/scenarios/${id}`),
-  nodeProps: (scenarioId: string, nodeId: string) => j<NodeProps>(`/api/scenarios/${scenarioId}/nodes/${nodeId}`),
-  runScenario: (id: string) => j<RunDetail>(`/api/scenarios/${id}/run`, { method: "POST" }),
+  scenarioRun: (id: string) => j<ScenarioRunView | Record<string, never>>(`/api/scenarios/${id}/run`),
+  runScenario: (id: string) => j<ScenarioRunView>(`/api/scenarios/${id}/run`, { method: "POST" }),
+  abortScenario: (id: string) => j<{ ok: boolean; message: string }>(`/api/scenarios/${id}/abort`, { method: "POST" }),
+  addNode: (scenarioId: string, type: string, x: number, y: number) =>
+    j<ScenarioNode>(`/api/scenarios/${scenarioId}/nodes`, { method: "POST", body: JSON.stringify({ type, x, y }) }),
+  updateNode: (scenarioId: string, nodeId: string, body: { x?: number; y?: number; label?: string; params?: Record<string, unknown> }) =>
+    j<ScenarioNode>(`/api/scenarios/${scenarioId}/nodes/${nodeId}`, { method: "PATCH", body: JSON.stringify(body) }),
+  deleteNode: (scenarioId: string, nodeId: string) =>
+    j<{ ok: boolean }>(`/api/scenarios/${scenarioId}/nodes/${nodeId}`, { method: "DELETE" }),
+  addEdge: (scenarioId: string, src: string, dst: string, fail: boolean) =>
+    j<ScenarioEdge>(`/api/scenarios/${scenarioId}/edges`, { method: "POST", body: JSON.stringify({ src, dst, fail }) }),
+  deleteEdge: (scenarioId: string, edgeId: number) =>
+    j<{ ok: boolean }>(`/api/scenarios/${scenarioId}/edges/${edgeId}`, { method: "DELETE" }),
 
   configRacks: () => j<any[]>("/api/config/racks"),
   createRack: (body: { id: string; name?: string; loc?: string; cap?: number }) =>

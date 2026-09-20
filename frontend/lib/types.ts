@@ -198,39 +198,80 @@ export interface Measurements {
   sampleText: string;
 }
 
+export type NodeKind = "terminal" | "action" | "flow" | "measure" | "logic" | "danger";
+/** ready = not run yet · running = in flight · done = finished ok · error = the
+ *  instrument rejected it or comms failed · skipped = branch not taken */
+export type NodeState = "ready" | "running" | "done" | "error" | "skipped";
+
+export interface NodeParamSpec {
+  key: string;
+  label: string;
+  type: "number" | "select";
+  unit?: string;
+  options?: string[];
+  default?: number | string;
+  min?: number;
+  max?: number;
+  step?: number;
+}
+
+export interface NodeTypeSpec {
+  type: string;
+  label: string;
+  kind: NodeKind;
+  badge: string;
+  help: string;
+  params: NodeParamSpec[];
+}
+
 export interface ScenarioNode {
   id: string;
   type: string;
+  kind: NodeKind;
+  badge: string;
   label: string;
   sub?: string;
+  help?: string;
   x: number;
   y: number;
-  kind: "terminal" | "action" | "flow" | "measure" | "logic" | "danger";
+  params: Record<string, number | string>;
 }
 
 export interface ScenarioEdge {
+  id: number;
   from: string;
   to: string;
-  kind: "R" | "B";
   fail: boolean;
 }
 
-export interface ScenarioGraph {
-  scenario: { id: string; name: string; version: string; state: string };
-  nodes: ScenarioNode[];
-  edges: ScenarioEdge[];
-  palette: string[];
+export interface ScenarioRunView {
+  id: string;
+  scenario: string;
+  scenarioId: string;
+  version: string;
+  status: Run["status"];
+  progress: number;
+  targets: string[];
+  by: string;
+  started: string;
+  finished: string;
+  dur: string;
+  currentNode: string | null;
+  nodeStates: Record<string, NodeState>;
+  startedMs: number | null;
+  endedMs: number | null;
+  estMs: number;
+  events: { t: string; node: string; lvl: RunEvent["lvl"]; m: string; scpi: string; resp: string; lat: number }[];
 }
 
-export interface NodeProps {
-  name: string;
-  target: string;
-  params: [string, string][];
-  delay: string;
-  timeout: string;
-  retry: string;
-  fail: string;
-  comments: string;
+export interface ScenarioGraph {
+  scenario: { id: string; name: string; version: string; state: string; targetUnit: string };
+  nodes: ScenarioNode[];
+  edges: ScenarioEdge[];
+  nodeTypes: NodeTypeSpec[];
+  validation: { ok: boolean; problems: string[] };
+  estMs: number;
+  run: ScenarioRunView | null;
 }
 
 export interface TerminalCommand {

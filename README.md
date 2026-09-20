@@ -233,16 +233,44 @@ seed:
 rm backend/data.db   # optional: fresh schema + seed on next start
 ```
 
+## Scenario Builder
+
+The builder is a real editor over a persisted graph, and the runner walks that graph
+against the instrument.
+
+**Editing.** Drag a block from the left palette onto the canvas to add it; drag a block
+to move it; drag the `○` on a block's right edge onto another block to connect them;
+click a connection to remove it. Selecting a block opens its settings on the right,
+where every parameter is editable — change *Set Voltage* to 21.5 V and that is the value
+`VOLT 21.5,(@1)` carries on the next run. Values are range-checked server-side against
+the same soft limits the front panel uses, so an out-of-range entry is refused with the
+reason rather than silently stored. A **Threshold Check** block has a second, red port
+for its fail path. Positions, parameters and connections all persist.
+
+**Validation.** The graph is checked continuously — exactly one Start, no step without a
+next step, no block unreachable from Start, a fail path where one is required. Run is
+disabled until it passes and the problems are listed under the inspector.
+
+**Running.** Each block is dispatched as real SCPI, confirmed by readback and written to
+the audit log. While the run is live:
+
+- a read-only strip at the top shows elapsed time against the estimate and names the
+  block currently executing;
+- each block is colour-coded — **green** ready, **yellow** running, **grey** finished,
+  **red** errored, dimmed for a branch not taken;
+- the panel at the bottom lists every command the run has sent, with the exact SCPI
+  string, the instrument's reply and the round-trip latency.
+
+A run that reaches a **Safe Shutdown** block (because a check failed) finishes as
+`Failed` with the output de-energised; `Aborted` is reserved for an operator pressing
+Abort.
+
 ### What is still simulated
 
-- The **scenario runner** walks the Eclipse Cycle steps as a timed sequence and records
-  events, but does not yet dispatch each step to the instrument. Note the sample
-  scenario's "Set Voltage" step is only valid in FIX mode — after "Apply Solar Profile"
-  (SAS mode) a real instrument would answer 315; the step order needs revisiting before
-  live per-step dispatch.
 - The 24 h of measurement history seeded on first start is synthetic (so charts aren't
   empty); everything from that moment on is real polled data.
-- Save / Validate / Dry Run in the Scenario Builder are placeholders.
+- Scenario versioning is cosmetic — editing a scenario does not bump `v1.4` or keep the
+  previous revision.
 
 ### Offline
 

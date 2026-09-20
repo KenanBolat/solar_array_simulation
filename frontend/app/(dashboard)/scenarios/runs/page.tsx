@@ -32,12 +32,6 @@ export default function ScenarioRunsPage() {
     });
   };
 
-  const onPause = async () => {
-    if (!activeRun) return;
-    const res = await api.pauseRun(activeRun.id);
-    notify(res.message);
-  };
-
   return (
     <div className="p-5">
       <div className="mb-4 flex flex-wrap gap-2">
@@ -100,7 +94,6 @@ export default function ScenarioRunsPage() {
                 <div className="flex justify-between"><span className="text-faint">Started by</span><span>{activeRun.by}</span></div>
               </div>
               <div className="mt-3.5 flex gap-2">
-                <div onClick={onPause} className="cursor-pointer rounded-md border border-line2 bg-panel2 px-3.5 py-1.5 text-[11.5px] font-semibold text-ink">Pause</div>
                 <div onClick={onAbort} className="cursor-pointer rounded-md border px-3.5 py-1.5 text-[11.5px] font-semibold"
                   style={{ background: isLive ? "#f871711a" : "transparent", borderColor: isLive ? "#f8717188" : "#2c3543", color: isLive ? "#f87171" : "#5c6678" }}>
                   Abort
