@@ -1,4 +1,5 @@
 "use client";
+import Image from "next/image";
 import Link from "next/link";
 import { api } from "@/lib/api";
 import { usePoll } from "@/lib/useApi";
@@ -22,22 +23,25 @@ export default function IntroPage() {
       style={{ backgroundColor: "#0b0d11" }}
     >
       <div className="w-full max-w-[1100px]">
-        <div className="mb-[22px] flex items-center gap-3">
-          <div className="flex h-[42px] w-[42px] items-center justify-center rounded-[9px] border border-cyan/40 bg-cyan/10">
-            <div className="h-[18px] w-[18px] rounded-[3px] border-[2.5px] border-cyan" />
-          </div>
-          <div className="font-mono text-[11px] font-semibold tracking-[0.14em] text-cyan">
-            GROUND SEGMENT · POWER TEST
+        <div className="mb-[22px] flex items-start gap-5">
+          {/* The full illustration, at the one size on the site where its detail
+              is legible. Hidden on narrow screens, where the headline matters more. */}
+          <Image src="/logo.webp" alt="" width={512} height={512} priority
+            className="hidden h-[132px] w-[132px] flex-none sm:block" />
+          <div>
+            <div className="mb-3 font-mono text-[11px] font-semibold tracking-[0.14em] text-cyan">
+              GROUND SEGMENT · POWER TEST
+            </div>
+            <h1 className="mb-3 text-[40px] font-bold leading-[1.08] tracking-tight">
+              Solar Array Simulator
+              <br />
+              Control Platform
+            </h1>
+            <p className="max-w-[560px] text-[16px] leading-relaxed text-muted">
+              Monitor, control, and automate solar array simulator test scenarios across distributed laboratory racks.
+            </p>
           </div>
         </div>
-        <h1 className="mb-3 text-[40px] font-bold leading-[1.08] tracking-tight">
-          Solar Array Simulator
-          <br />
-          Control Platform
-        </h1>
-        <p className="mb-[30px] max-w-[560px] text-[16px] leading-relaxed text-muted">
-          Monitor, control, and automate solar array simulator test scenarios across distributed laboratory racks.
-        </p>
 
         <div className="grid grid-cols-[1fr_360px] items-start gap-6">
           <div className="flex gap-4">

@@ -1,4 +1,5 @@
 "use client";
+import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { api } from "@/lib/api";
@@ -26,9 +27,11 @@ export function Sidebar() {
       <Link href="/" title="Back to the landing page"
         className="block border-b border-line px-4 pb-3.5 pt-[18px] hover:bg-[#ffffff06]">
         <div className="flex items-center gap-2.5">
-          <div className="flex h-[26px] w-[26px] items-center justify-center rounded-md border border-cyan/40 bg-cyan/10">
-            <div className="h-[11px] w-[11px] rounded-sm border-2 border-cyan" />
-          </div>
+          {/* The compact mark, not the full illustration: below ~40 px the orbit
+              ring, rays and antenna alias away and the whole scene reads as a
+              smudge. Fixed box so the row height never shifts while it loads. */}
+          <Image src="/logo-mark.webp" alt="" width={36} height={36} priority
+            className="h-9 w-9 flex-none" />
           <div>
             <div className="text-[12px] font-bold leading-tight tracking-wide">SAS Control</div>
             <div className="font-mono text-[9.5px] tracking-wider text-faint">PLATFORM v0.1</div>
