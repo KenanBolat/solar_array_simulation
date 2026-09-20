@@ -117,6 +117,27 @@ mainframe `SYST:CHAN?` and creates a unit for any channel not set up yet (named
 of them by default. A mainframe is identified by its full address, not just its
 IP — two units can share an IP and differ by port.
 
+### SAS mode on the Virtual Front Panel
+
+The panel programs the four coupled curve parameters two ways:
+
+- **Menu → Set SAS Curve** lists Isc, Imp, Vmp and Voc. Select one, type a value on
+  the keypad (or nudge it with ▲▼), press Enter, and repeat. Values are held in a
+  draft — a `*` in the header marks unsaved edits and any value differing from the
+  channel is shown next to what the instrument is actually holding. **Apply Curve**
+  sends all four in one message, because the instrument validates them as a set.
+  The Apply row doubles as the check: it shows live Pmp, or refuses with the reason
+  (`Imp must not exceed Isc (321)`) before anything is dispatched.
+- **Menu → Recall preset** applies a stored SAS preset in one step.
+
+The meter screen shows the curve the channel holds (`Vmp 24.5V Imp 4.20A Voc 32.0V`)
+while in SAS mode, where the FIX current limit means nothing. Entering a voltage or
+current while the channel is in SAS warns before you type and reports the
+instrument's `315 Settings conflict` verbatim if you go ahead.
+
+The same four values are editable on the Simulator Control screen (SAS mode panel →
+Program SAS Curve), and from a Scenario Builder *Apply Solar Profile* block.
+
 ### Presets and saved states
 
 Two different mechanisms, deliberately kept apart:
