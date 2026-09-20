@@ -52,6 +52,11 @@ NODE_TYPES = {
               "help": "Where the run begins. Exactly one per scenario."},
     "end": {"label": "End", "kind": "terminal", "badge": "END", "params": [],
             "help": "Marks a successful finish."},
+    "target": {"label": "Select Equipment", "kind": "flow", "badge": "TARGET",
+               "params": [{"key": "unit", "label": "Instrument · channel", "type": "unit", "default": ""}],
+               "help": "Points every block after it at a different channel — SAS-01 (@1), SAS-02 (@2) and so "
+                        "on. Nothing is sent to the instrument; it only changes where the following steps go. "
+                        "Without one, a scenario runs against its default target throughout."},
     "mode": {"label": "Set Mode", "kind": "action", "badge": "MODE",
              "params": [{"key": "mode", "label": "Operating mode", "type": "select",
                           "options": ["FIX", "SAS"], "default": "FIX"}],

@@ -198,3 +198,6 @@ class ScenarioRunEvent(Base):
     power = Column(Float, nullable=True)
     # wall-clock of the step, so exported rows have a real time axis
     ts_ms = Column(Integer, nullable=True)
+    # the channel this step ran against — a scenario may switch equipment part-way,
+    # so the run's target list is not the answer for any single row
+    unit = Column(String, nullable=False, default="")

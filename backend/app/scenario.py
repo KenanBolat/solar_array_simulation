@@ -71,6 +71,19 @@ def resolve_curve(db: Session, params: dict) -> tuple[dict | None, str]:
     return {"isc": pr.isc, "imp": pr.imp, "vmp": pr.vmp, "voc": pr.voc}, f"preset {pr.name}"
 
 
+def resolve_target(db: Session, params: dict) -> tuple[str | None, str]:
+    """The channel a Select Equipment block switches to, and why it cannot."""
+    name = str(params.get("unit") or "").strip()
+    if not name:
+        return None, "no channel chosen"
+    u = state.get_unit(db, name)
+    if not u:
+        return None, f"{name} is no longer configured"
+    if not u.enabled:
+        return None, f"{state.unit_label(u)} is disabled"
+    return u.name, state.unit_label(u)
+
+
 def _node_dict(n: orm.ScenarioNode, db: Session | None = None) -> dict:
     spec = data.NODE_TYPES.get(n.type, {})
     params = {**node_defaults(n.type), **json.loads(n.params or "{}")}
@@ -79,6 +92,9 @@ def _node_dict(n: orm.ScenarioNode, db: Session | None = None) -> dict:
         curve, why = resolve_curve(db, params)
         sub = (f"{why} · Vmp {curve['vmp']:g} V · Imp {curve['imp']:g} A" if curve
                else f"⚠ {why}")
+    if n.type == "target" and db is not None:
+        name, why = resolve_target(db, params)
+        sub = why if name else f"⚠ {why}"
     return {
         "id": n.id, "type": n.type, "kind": spec.get("kind", "action"),
         "badge": spec.get("badge", n.type.upper()),
@@ -115,19 +131,62 @@ def summarise(node_type: str, params: dict) -> str:
     return ""
 
 
+def walk(nodes: dict, out: dict, start: str, target0: str) -> dict[str, dict[str, set]]:
+    """Follows every path from Start, carrying the channel a block runs against and
+    the operating mode that channel is in. Both travel together: a Set Mode applies
+    to whichever channel is current, so comparing modes across channels would be
+    meaningless. A block reachable by several paths collects each state it may see.
+    "?" as a mode means the channel was left in whatever it already was."""
+    reached: dict[str, dict[str, set]] = {}
+    stack: list[tuple[str, str, str]] = [(start, target0, "?")]
+    seen_states: set[tuple[str, str, str]] = set()
+    while stack:
+        cur, tgt, mode = stack.pop()
+        if (cur, tgt, mode) in seen_states:
+            continue
+        seen_states.add((cur, tgt, mode))
+        slot = reached.setdefault(cur, {"targets": set(), "modes": set()})
+        slot["targets"].add(tgt)
+        slot["modes"].add(mode)
+        node = nodes[cur]
+        if node["type"] == "target":
+            tgt = str(node["params"].get("unit") or "") or tgt
+            mode = "?"                      # a different channel, in its own state
+        elif node["type"] == "mode":
+            mode = node["params"].get("mode", mode)
+        stack.extend((e["to"], tgt, mode) for e in out.get(cur, []))
+    return reached
+
+
+def _edges_out(g: dict) -> dict[str, list]:
+    out: dict[str, list] = {n["id"]: [] for n in g["nodes"]}
+    for e in g["edges"]:
+        out[e["from"]].append(e)
+    return out
+
+
 def graph(db: Session, scenario_id: str) -> dict | None:
     s = db.get(orm.Scenario, scenario_id)
     if not s:
         return None
-    return {
-        # targetUnit is the *effective* target — the same fallback start_run uses —
+    default_target = s.target_unit or data.FEATURED_UNIT
+    g = {
+        # targetUnit is the *effective* default — the same fallback start_run uses —
         # so the canvas can never name a different channel than the one dispatched to.
         "scenario": {"id": s.id, "name": s.name, "version": s.version, "state": s.state,
-                      "targetUnit": s.target_unit or data.FEATURED_UNIT},
+                      "targetUnit": default_target},
         "nodes": [_node_dict(n, db) for n in sorted(s.nodes, key=lambda n: n.id)],
         "edges": [{"id": e.id, "from": e.src, "to": e.dst, "fail": e.fail} for e in s.edges],
         "nodeTypes": [{"type": k, **v} for k, v in data.NODE_TYPES.items()],
     }
+    # Tell each block which channel it will run against, so a scenario that
+    # switches equipment part-way is readable on the canvas.
+    nodes = {n["id"]: n for n in g["nodes"]}
+    start = next((n["id"] for n in g["nodes"] if n["type"] == "start"), None)
+    reached = walk(nodes, _edges_out(g), start, default_target) if start else {}
+    for n in g["nodes"]:
+        n["runsOn"] = sorted(reached.get(n["id"], {}).get("targets", set()))
+    return g
 
 
 def list_scenarios(db: Session) -> list[dict]:
@@ -183,7 +242,17 @@ def update_node(db: Session, node_id: str, x=None, y=None, params=None, label=No
             if p["key"] not in params:
                 continue
             raw = params[p["key"]]
-            if p["type"] == "preset":
+            if p["type"] == "unit":
+                name = str(raw or "").strip()
+                if name:
+                    u = state.get_unit(db, name)
+                    if not u:
+                        raise ValueError(f"No channel named {name} is configured")
+                    if not u.enabled:
+                        raise ValueError(f"{state.unit_label(u)} is disabled — enable it first")
+                    name = u.name
+                current[p["key"]] = name
+            elif p["type"] == "preset":
                 pid = int(raw or 0)
                 if pid:
                     pr = db.get(orm.Preset, pid)
@@ -283,9 +352,7 @@ def validate(db: Session, scenario_id: str) -> dict:
     if not g:
         return {"ok": False, "problems": ["Unknown scenario"]}
     nodes = {n["id"]: n for n in g["nodes"]}
-    out: dict[str, list] = {n: [] for n in nodes}
-    for e in g["edges"]:
-        out[e["from"]].append(e)
+    out = _edges_out(g)
     problems = []
     starts = [n for n in nodes.values() if n["type"] == "start"]
     if len(starts) != 1:
@@ -303,28 +370,21 @@ def validate(db: Session, scenario_id: str) -> dict:
             curve, why = resolve_curve(db, n["params"])
             if not curve:
                 problems.append(f"{n['label']} has no usable curve — {why}")
+        # a Select Equipment block must name a channel that still exists
+        if n["type"] == "target":
+            name, why = resolve_target(db, n["params"])
+            if not name:
+                problems.append(f"{n['label']} has no usable channel — {why}")
 
     warnings = []
     if starts:
-        # Reachability, and with it the operating mode each block runs in. A block
-        # can be reached down more than one path, so each block carries the set of
-        # modes it may see; "?" means whatever the channel was already in.
-        seen: set[str] = set()
-        modes: dict[str, set[str]] = {}
-        stack: list[tuple[str, str]] = [(starts[0]["id"], "?")]
-        while stack:
-            cur, mode = stack.pop()
-            if mode in modes.get(cur, set()):
-                continue
-            seen.add(cur)
-            modes.setdefault(cur, set()).add(mode)
-            nxt_mode = nodes[cur]["params"].get("mode", mode) if nodes[cur]["type"] == "mode" else mode
-            stack.extend((e["to"], nxt_mode) for e in out.get(cur, []))
+        reached = walk(nodes, out, starts[0]["id"], g["scenario"]["targetUnit"])
+        uncovered = _uncovered_curve(nodes, out, starts[0]["id"], g["scenario"]["targetUnit"])
         for n in nodes.values():
-            if n["id"] not in seen:
+            if n["id"] not in reached:
                 problems.append(f"{n['label']} is never reached from Start")
                 continue
-            here = modes.get(n["id"], set())
+            here = reached[n["id"]]["modes"]
             # VOLT / CURR are refused with 315 while the channel is in SAS mode.
             if n["type"] in ("setv", "seti") and "SAS" in here:
                 problems.append(
@@ -332,7 +392,7 @@ def validate(db: Session, scenario_id: str) -> dict:
                     f"315 settings conflict. Switch back to FIX first, or use Apply Solar Profile.")
             # Entering SAS without programming a curve leaves whatever was there before.
             if n["type"] == "output" and str(n["params"].get("on", "")).upper() == "ON" and "SAS" in here:
-                if not _curve_before(n["id"], nodes, out, starts[0]["id"]):
+                if n["id"] in uncovered:
                     warnings.append(
                         f"{n['label']} energises the output in SAS mode with no Apply Solar Profile "
                         f"before it — the channel keeps whatever curve was last programmed.")
@@ -344,18 +404,29 @@ def validate(db: Session, scenario_id: str) -> dict:
     return {"ok": not problems, "problems": problems, "warnings": warnings}
 
 
-def _curve_before(target: str, nodes: dict, out: dict, start: str) -> bool:
-    """True when every path from Start to `target` passes an Apply Solar Profile.
-    Walks the blocks reachable without meeting one; if the target is among them,
-    at least one way in never programmed a curve."""
-    seen, stack = set(), [start]
+def _uncovered_curve(nodes: dict, out: dict, start: str, target0: str) -> set[str]:
+    """Blocks reachable by at least one path that never programmed a curve on the
+    channel current at that point. Switching equipment resets the cover, because a
+    curve sent to one channel says nothing about another."""
+    bad: set[str] = set()
+    seen: set[tuple[str, str, bool]] = set()
+    stack: list[tuple[str, str, bool]] = [(start, target0, False)]
     while stack:
-        cur = stack.pop()
-        if cur in seen or nodes[cur]["type"] == "sas":
+        cur, tgt, covered = stack.pop()
+        if (cur, tgt, covered) in seen:
             continue
-        seen.add(cur)
-        stack.extend(e["to"] for e in out.get(cur, []))
-    return target not in seen
+        seen.add((cur, tgt, covered))
+        if not covered:
+            bad.add(cur)
+        node = nodes[cur]
+        if node["type"] == "target":
+            nxt = str(node["params"].get("unit") or "") or tgt
+            if nxt != tgt:
+                tgt, covered = nxt, False
+        elif node["type"] == "sas":
+            covered = True
+        stack.extend((e["to"], tgt, covered) for e in out.get(cur, []))
+    return bad
 
 
 def estimate_ms(db: Session, scenario_id: str) -> int:
@@ -378,9 +449,9 @@ def _set_node_state(run: orm.ScenarioRun, node_id: str, value: str):
 
 
 def _event(db: Session, run_id: str, node: str, lvl: str, m: str,
-           result: CommandResult | None = None, reading: dict | None = None):
+           result: CommandResult | None = None, reading: dict | None = None, unit: str = ""):
     db.add(orm.ScenarioRunEvent(
-        run_id=run_id, t=now_hhmmss(), node=node, lvl=lvl, m=m,
+        run_id=run_id, t=now_hhmmss(), node=node, lvl=lvl, m=m, unit=unit,
         scpi=result.sent if result else "", response=(result.response or "") if result else "",
         latency_ms=result.latency_ms if result else 0, ts_ms=_ms(),
         voltage=reading.get("voltage") if reading else None,
@@ -493,16 +564,37 @@ async def start_run(run_id: str):
             return
         inst = Instrument.for_unit(unit)
         unit_name = unit.name
+        unit_show = state.unit_label(unit)
         run.status, run.progress = "Running", 0
         run.started, run.started_ms, run.finished = now_hhmmss(), _ms(), "—"
         run.node_states = json.dumps({n["id"]: READY for n in g["nodes"]})
-        _event(db, run_id, "start", "info", f"Run accepted · {g['scenario']['name']} {g['scenario']['version']} · target {unit_name}")
+        _event(db, run_id, "start", "info",
+                f"Run accepted · {g['scenario']['name']} {g['scenario']['version']} · target {unit_show}",
+                unit=unit_name)
 
     nodes = {n["id"]: n for n in g["nodes"]}
-    out: dict[str, list] = {n: [] for n in nodes}
-    for e in g["edges"]:
-        out[e["from"]].append(e)
+    out = _edges_out(g)
     start_node = next((n["id"] for n in g["nodes"] if n["type"] == "start"), None)
+
+    # The channel the run is dispatching to. A Select Equipment block moves it, so
+    # it is rebound mid-run rather than fixed when the run was accepted.
+    class Target:
+        def __init__(self, inst: Instrument, name: str, show: str):
+            self.inst, self.name, self.show = inst, name, show
+            self.touched = [name]
+
+        def switch(self, db: Session, name: str) -> str:
+            u = state.get_unit(db, name)
+            if not u:
+                raise StepRefused(f"{name} is no longer configured")
+            if not u.enabled:
+                raise StepRefused(f"{state.unit_label(u)} is disabled")
+            self.inst, self.name, self.show = Instrument.for_unit(u), u.name, state.unit_label(u)
+            if u.name not in self.touched:
+                self.touched.append(u.name)
+            return self.show
+
+    target = Target(inst, unit_name, unit_show)
 
     async def drive():
         last: dict = {}
@@ -528,8 +620,18 @@ async def start_run(run_id: str):
                     result, msg = None, f"waited {int(node['params'].get('ms', 0))} ms"
                 elif node["type"] == "threshold":
                     result, msg = None, ""
+                elif node["type"] == "target":
+                    # Nothing is sent; the following steps simply go elsewhere. The
+                    # last reading belongs to the old channel, so it is dropped.
+                    result, msg = None, ""
+                    try:
+                        with session_scope() as db:
+                            msg = f"following steps run on {target.switch(db, str(node['params'].get('unit') or ''))}"
+                        last.clear()
+                    except StepRefused as e:
+                        refused = str(e)
                 else:
-                    result, msg, refused = await asyncio.to_thread(_dispatch_threaded, run_id, node, inst, last)
+                    result, msg, refused = await asyncio.to_thread(_dispatch_threaded, run_id, node, target.inst, last)
 
                 failed = refused != "" or (result is not None and not result.ok)
                 branch_fail = False
@@ -542,18 +644,22 @@ async def start_run(run_id: str):
                     if not run or run.status != "Running":
                         return
                     if result is not None:
-                        state.log_command(db, RUNNER_USER, unit_name, f"scenario:{node['label']}", result)
+                        state.log_command(db, RUNNER_USER, target.name, f"scenario:{node['label']}", result)
+                    # keep the run's target list honest as it moves between channels
+                    if run.targets != ",".join(target.touched):
+                        run.targets = ",".join(target.touched)
                     if failed:
                         _set_node_state(run, cur, ERROR)
                         detail = refused or result.describe()
-                        _event(db, run_id, cur, "err", f"{node['label']} · {detail}", result)
+                        _event(db, run_id, cur, "err", f"{node['label']} · {detail}", result, unit=target.name)
                     else:
                         _set_node_state(run, cur, DONE)
                         lvl = "warn" if branch_fail else "ok"
                         # Only the steps that actually produced a reading carry one, so
                         # an exported row never implies a measurement the step never took.
                         reading = last if node["type"] in ("measure", "record") and last else None
-                        _event(db, run_id, cur, lvl, f"{node['label']}{' · ' + msg if msg else ''}", result, reading)
+                        _event(db, run_id, cur, lvl, f"{node['label']}{' · ' + msg if msg else ''}",
+                               result, reading, unit=target.name)
                     visited += 1
                     run.progress = min(99, round(visited / total * 100))
 
@@ -568,7 +674,8 @@ async def start_run(run_id: str):
                                 run.status, run.finished, run.ended_ms = "Failed", now_hhmmss(), _ms()
                                 run.current_node = ""
                                 run.dur = _fmt_dur(run)
-                                _event(db, run_id, cur, "err", "Run stopped — the step failed and there is no fail path")
+                                _event(db, run_id, cur, "err", "Run stopped — the step failed and there is no fail path",
+                                       unit=target.name)
                         return
                 elif node["type"] == "threshold":
                     nxt = next((e["to"] for e in edges if e["fail"] is branch_fail), None)
@@ -594,7 +701,7 @@ async def start_run(run_id: str):
                             run.node_states = json.dumps(states)
                             _event(db, run_id, cur, "err" if ended else "ok",
                                    "Run ended on Safe Shutdown — the output is de-energised"
-                                   if ended else "Run completed")
+                                   if ended else "Run completed", unit=target.name)
                     return
                 cur = nxt
         except asyncio.CancelledError:
@@ -606,7 +713,7 @@ async def start_run(run_id: str):
                 if run and run.status == "Running":
                     run.status, run.finished, run.ended_ms = "Failed", now_hhmmss(), _ms()
                     run.dur = _fmt_dur(run)
-                    _event(db, run_id, cur or "", "err", "Run aborted by an internal error")
+                    _event(db, run_id, cur or "", "err", "Run aborted by an internal error", unit=target.name)
 
     _run_tasks[run_id] = asyncio.create_task(drive())
 
@@ -614,7 +721,7 @@ async def start_run(run_id: str):
 # ---------- CSV export ----------
 EXPORT_DIR = Path(__file__).resolve().parent.parent / "exports"
 
-CSV_HEADER = ["run", "scenario", "version", "target", "time_utc", "elapsed_s", "block",
+CSV_HEADER = ["run", "scenario", "version", "channel", "time_utc", "elapsed_s", "block",
               "level", "message", "scpi_sent", "response", "latency_ms",
               "voltage_v", "current_a", "power_w"]
 
@@ -637,7 +744,7 @@ def run_csv_rows(db: Session, run_id: str, measured_only: bool = False) -> list[
         if measured_only and e.voltage is None:
             continue
         elapsed = round((e.ts_ms - run.started_ms) / 1000, 3) if e.ts_ms and run.started_ms else ""
-        rows.append([run.id, run.scenario, run.version, run.targets, e.t, elapsed,
+        rows.append([run.id, run.scenario, run.version, e.unit, e.t, elapsed,
                       labels.get(e.node, e.node), e.lvl, e.m, e.scpi, e.response,
                       e.latency_ms or "", e.voltage if e.voltage is not None else "",
                       e.current if e.current is not None else "",
@@ -717,7 +824,7 @@ def run_view(db: Session, run_id: str) -> dict | None:
         "stepsDone": sum(1 for v in states.values() if v in (DONE, ERROR)),
         "stepsTotal": len(states),
         "events": [{"t": e.t, "node": e.node, "lvl": e.lvl, "m": e.m, "scpi": e.scpi,
-                     "resp": e.response, "lat": e.latency_ms,
+                     "resp": e.response, "lat": e.latency_ms, "unit": e.unit or "",
                      # offset from the run's start, so the strip can mark where each step ran
                      "atMs": max(0, e.ts_ms - run.started_ms) if e.ts_ms and run.started_ms else None}
                     for e in events],

@@ -268,6 +268,19 @@ the same soft limits the front panel uses, so an out-of-range entry is refused w
 reason rather than silently stored. A **Threshold Check** block has a second, red port
 for its fail path. Positions, parameters and connections all persist.
 
+**Equipment.** A scenario runs against a default channel throughout unless a **Select
+Equipment** block moves it. That block picks any configured instrument and channel —
+`SAS-01 (@1)`, `SAS-02 (@2)` — and every step after it is dispatched there; nothing is
+sent to the instrument by the switch itself. Once a scenario uses more than one channel,
+each block on the canvas says which one it runs on, the command history gains a channel
+column, and every exported CSV row names its own channel rather than the run's whole
+list. The last reading is dropped at a switch, so a Threshold Check can never test one
+channel's measurement against another's.
+
+A run is refused unless **every** channel it may reach is enabled and reachable, not just
+the default — a Select Equipment block pointing at a disabled channel fails validation,
+and one pointing at an unreachable channel is refused at dispatch.
+
 **Solar profiles.** An *Apply Solar Profile* block takes the four coupled curve values
 either typed into the block or from a **stored SAS preset**. A preset is read when the
 block runs, so editing the preset changes every scenario pointing at it, and only

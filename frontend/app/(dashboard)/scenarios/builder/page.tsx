@@ -4,7 +4,7 @@ import { api, SCENARIO_ID } from "@/lib/api";
 import { usePoll } from "@/lib/useApi";
 import { usePageHeader } from "@/lib/header-context";
 import { useUi } from "@/lib/ui-context";
-import type { NodeState, NodeTypeSpec, Preset, ScenarioGraph, ScenarioNode } from "@/lib/types";
+import type { NodeState, NodeTypeSpec, Preset, ScenarioGraph, ScenarioNode, Unit } from "@/lib/types";
 
 /** Matches data.CURVE_PRESET on the backend. */
 const PRESET_SOURCE = "Stored preset";
@@ -102,6 +102,12 @@ export default function ScenarioBuilderPage() {
   const sel = selected ? byId[selected] : null;
   const selSpec = sel ? graph.nodeTypes.find((t) => t.type === sel.type) : null;
   const stateOf = (id: string): NodeState | null => (runView?.nodeStates?.[id] as NodeState) ?? null;
+  /** "SAS-01" → "SAS-01 (@1)"; several channels are joined so a block reachable
+   *  down paths that chose different equipment says so rather than picking one. */
+  const labelFor = (names: string[]) =>
+    names.map((n) => units?.find((u) => u.name === n)?.label ?? n).join(" / ");
+  // Only worth labelling blocks with their channel when the graph uses more than one.
+  const multiTarget = new Set(graph.nodes.flatMap((n) => n.runsOn ?? [])).size > 1;
 
   /** Zoom so the widest/tallest block still fits the visible canvas. */
   const fitToGraph = () => {
@@ -434,6 +440,9 @@ export default function ScenarioBuilderPage() {
                       style={{ color, background: color + "1f" }}>{n.badge}</div>
                     <div className="text-[12.5px] font-semibold leading-tight text-ink">{n.label}</div>
                     {n.sub && <div className="mt-0.5 font-mono text-[10px] text-muted">{n.sub}</div>}
+                    {multiTarget && n.type !== "target" && !!n.runsOn?.length && (
+                      <div className="mt-0.5 font-mono text-[9px] text-faint">on {labelFor(n.runsOn)}</div>
+                    )}
 
                     {/* output ports: drag one onto another block to connect */}
                     {!isLive && n.type !== "end" && n.type !== "shutdown" && (
@@ -484,9 +493,10 @@ export default function ScenarioBuilderPage() {
             </div>
             {(runView?.events ?? []).slice().reverse().map((ev, i) => (
               <div key={i} className="grid items-baseline gap-2 border-b border-[#161b24] px-3 py-1 font-mono text-[10.5px]"
-                style={{ gridTemplateColumns: "62px 120px 1fr 190px 52px" }}>
+                style={{ gridTemplateColumns: `62px 120px ${multiTarget ? "92px " : ""}1fr 190px 52px` }}>
                 <span className="text-faint">{ev.t}</span>
                 <span className="truncate" style={{ color: LVL_COLOR[ev.lvl] }}>{byId[ev.node]?.label ?? ev.node}</span>
+                {multiTarget && <span className="truncate text-faint">{labelFor(ev.unit ? [ev.unit] : [])}</span>}
                 <span className="truncate text-[#cfd6e2]">{ev.m}</span>
                 <span className="truncate text-cyan" title={ev.scpi}>{ev.scpi}</span>
                 <span className="text-right text-faint">{ev.lat ? `${ev.lat} ms` : ""}</span>
@@ -509,7 +519,12 @@ export default function ScenarioBuilderPage() {
           {sel && selSpec && (
             <div className="rounded-[9px] border border-line bg-panel p-3.5">
               <div className="mb-0.5 text-[14px] font-bold">{sel.label}</div>
-              <div className="mb-3 text-[11px] text-muted">{selSpec.badge} · target {targetName || "—"}</div>
+              <div className="mb-3 text-[11px] text-muted">
+                {selSpec.badge}
+                {sel.type === "target"
+                  ? " · changes the channel for the steps after it"
+                  : ` · runs on ${labelFor(sel.runsOn) || targetName || "—"}`}
+              </div>
 
               {selSpec.params.length === 0 && (
                 <div className="mb-3 rounded-md border border-line2 bg-bg px-2.5 py-2 text-[11px] text-faint">
@@ -522,7 +537,8 @@ export default function ScenarioBuilderPage() {
                   .filter((p) => !p.only || p.only === sel.params.source)
                   .map((p) => (
                     <ParamField key={p.key} spec={p} value={String(sel.params[p.key] ?? "")}
-                      presets={sasPresets} disabled={isLive} onCommit={(v) => saveParam(p.key, v)} />
+                      presets={sasPresets} units={units ?? []} disabled={isLive}
+                      onCommit={(v) => saveParam(p.key, v)} />
                   ))}
               </div>
 
@@ -601,12 +617,38 @@ export default function ScenarioBuilderPage() {
   );
 }
 
-function ParamField({ spec, value, presets, disabled, onCommit }: {
-  spec: NodeTypeSpec["params"][number]; value: string; presets: Preset[];
+function ParamField({ spec, value, presets, units, disabled, onCommit }: {
+  spec: NodeTypeSpec["params"][number]; value: string; presets: Preset[]; units: Unit[];
   disabled: boolean; onCommit: (v: string) => void;
 }) {
   const [draft, setDraft] = useState(value);
   useEffect(() => { setDraft(value); }, [value]);
+
+  if (spec.type === "unit") {
+    // Only channels that are enabled can be dispatched to; a disabled one is still
+    // listed when it is the current choice, so the block does not silently change.
+    const choices = units.filter((u) => u.enabled || u.name === value);
+    return (
+      <div>
+        <label className="mb-1 block text-[10px] text-faint">{spec.label}</label>
+        <select value={value} disabled={disabled} onChange={(e) => onCommit(e.target.value)}
+          className="w-full rounded-md border bg-bg px-2.5 py-1.5 font-mono text-[12px] text-ink disabled:opacity-50"
+          style={{ borderColor: value ? "#232a36" : "#f8717188" }}>
+          <option value="">— choose an instrument and channel —</option>
+          {choices.map((u) => (
+            <option key={u.name} value={u.name}>
+              {u.label}{u.online ? "" : "  · unreachable"}{u.enabled ? "" : "  · disabled"}
+            </option>
+          ))}
+        </select>
+        {!choices.length && (
+          <div className="mt-1 text-[10px] leading-snug text-amber">
+            No enabled channels — add or enable one in Configuration.
+          </div>
+        )}
+      </div>
+    );
+  }
 
   if (spec.type === "preset") {
     return (

@@ -94,10 +94,16 @@ async def run_scenario(scenario_id: str, db: Session = Depends(get_db)):
     if not check["ok"]:
         raise HTTPException(400, "Scenario is not runnable — " + "; ".join(check["problems"]))
 
-    target_name = g["scenario"]["targetUnit"] or data.FEATURED_UNIT
-    target = state.get_unit(db, target_name)
-    if not target or not target.enabled or not target.online:
-        raise HTTPException(409, f"Target unit {target_name} is not active (enabled + reachable) — cannot dispatch a run against it")
+    # Every channel the scenario may dispatch to must be up, not only the default —
+    # a Select Equipment block can send later steps somewhere else entirely.
+    wanted = {g["scenario"]["targetUnit"] or data.FEATURED_UNIT}
+    wanted |= {t for n in g["nodes"] for t in n.get("runsOn", []) if t}
+    for name in sorted(wanted):
+        target = state.get_unit(db, name)
+        if not target or not target.enabled or not target.online:
+            raise HTTPException(
+                409, f"{state.unit_label(target) if target else name} is not active "
+                     f"(enabled + reachable) — cannot dispatch a run that uses it")
 
     if db.query(orm.ScenarioRun).filter(orm.ScenarioRun.scenario_id == scenario_id,
                                         orm.ScenarioRun.status == "Running").first():

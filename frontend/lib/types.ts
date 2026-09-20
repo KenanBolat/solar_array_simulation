@@ -206,8 +206,9 @@ export type NodeState = "ready" | "running" | "done" | "error" | "skipped";
 export interface NodeParamSpec {
   key: string;
   label: string;
-  /** "preset" is a select whose options come from the stored SAS presets. */
-  type: "number" | "select" | "preset";
+  /** "preset" and "unit" are selects whose options come from live data —
+   *  the stored SAS presets, and the configured channels. */
+  type: "number" | "select" | "preset" | "unit";
   unit?: string;
   options?: string[];
   default?: number | string;
@@ -238,6 +239,10 @@ export interface ScenarioNode {
   x: number;
   y: number;
   params: Record<string, number | string>;
+  /** The channel(s) this block will run against, following any Select Equipment
+   *  blocks upstream of it. More than one means it is reachable down paths that
+   *  selected different equipment. */
+  runsOn: string[];
 }
 
 export interface ScenarioEdge {
@@ -270,6 +275,8 @@ export interface ScenarioRunView {
   stepsTotal: number;
   events: {
     t: string; node: string; lvl: RunEvent["lvl"]; m: string; scpi: string; resp: string; lat: number;
+    /** the channel this step ran against */
+    unit: string;
     /** ms from the run's start, or null for a step that was never stamped. */
     atMs: number | null;
   }[];
