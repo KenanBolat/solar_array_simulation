@@ -198,39 +198,99 @@ export interface Measurements {
   sampleText: string;
 }
 
+export type NodeKind = "terminal" | "action" | "flow" | "measure" | "logic" | "danger";
+/** ready = not run yet · running = in flight · done = finished ok · error = the
+ *  instrument rejected it or comms failed · skipped = branch not taken */
+export type NodeState = "ready" | "running" | "done" | "error" | "skipped";
+
+export interface NodeParamSpec {
+  key: string;
+  label: string;
+  /** "preset" and "unit" are selects whose options come from live data —
+   *  the stored SAS presets, and the configured channels. */
+  type: "number" | "select" | "preset" | "unit";
+  unit?: string;
+  options?: string[];
+  default?: number | string;
+  min?: number;
+  max?: number;
+  step?: number;
+  /** Only shown when the block's `source` param equals this value. */
+  only?: string;
+}
+
+export interface NodeTypeSpec {
+  type: string;
+  label: string;
+  kind: NodeKind;
+  badge: string;
+  help: string;
+  params: NodeParamSpec[];
+}
+
 export interface ScenarioNode {
   id: string;
   type: string;
+  kind: NodeKind;
+  badge: string;
   label: string;
   sub?: string;
+  help?: string;
   x: number;
   y: number;
-  kind: "terminal" | "action" | "flow" | "measure" | "logic" | "danger";
+  params: Record<string, number | string>;
+  /** The channel(s) this block will run against, following any Select Equipment
+   *  blocks upstream of it. More than one means it is reachable down paths that
+   *  selected different equipment. */
+  runsOn: string[];
 }
 
 export interface ScenarioEdge {
+  id: number;
   from: string;
   to: string;
-  kind: "R" | "B";
   fail: boolean;
 }
 
-export interface ScenarioGraph {
-  scenario: { id: string; name: string; version: string; state: string };
-  nodes: ScenarioNode[];
-  edges: ScenarioEdge[];
-  palette: string[];
+export interface ScenarioRunView {
+  id: string;
+  scenario: string;
+  scenarioId: string;
+  version: string;
+  status: Run["status"];
+  progress: number;
+  targets: string[];
+  by: string;
+  started: string;
+  finished: string;
+  dur: string;
+  currentNode: string | null;
+  nodeStates: Record<string, NodeState>;
+  startedMs: number | null;
+  endedMs: number | null;
+  estMs: number;
+  /** Measured on the server, against the clock that stamped startedMs. */
+  elapsedMs: number;
+  stepsDone: number;
+  stepsTotal: number;
+  events: {
+    t: string; node: string; lvl: RunEvent["lvl"]; m: string; scpi: string; resp: string; lat: number;
+    /** the channel this step ran against */
+    unit: string;
+    /** ms from the run's start, or null for a step that was never stamped. */
+    atMs: number | null;
+  }[];
 }
 
-export interface NodeProps {
-  name: string;
-  target: string;
-  params: [string, string][];
-  delay: string;
-  timeout: string;
-  retry: string;
-  fail: string;
-  comments: string;
+export interface ScenarioGraph {
+  scenario: { id: string; name: string; version: string; state: string; targetUnit: string };
+  nodes: ScenarioNode[];
+  edges: ScenarioEdge[];
+  nodeTypes: NodeTypeSpec[];
+  /** problems block the run; warnings are worth reading but do not. */
+  validation: { ok: boolean; problems: string[]; warnings: string[] };
+  estMs: number;
+  run: ScenarioRunView | null;
 }
 
 export interface TerminalCommand {

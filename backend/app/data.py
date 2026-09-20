@@ -25,6 +25,117 @@ SCENARIO = {
     "state": "DRAFT",
 }
 
+# ---------------------------------------------------------------------------
+# Node type registry. Each entry declares what the block does, how it looks on
+# the canvas, and the parameters an operator can edit — the UI renders its
+# editor straight from `params`, and the runner reads the same keys when it
+# dispatches. Adding a block type here makes it appear in the palette, the
+# editor and the runner at once.
+# ---------------------------------------------------------------------------
+# How large a block is drawn on the builder canvas. The backend needs it only to
+# place a dropped block clear of the ones already there; the frontend owns the
+# rendering and keeps the same numbers.
+BLOCK_W, BLOCK_H = 178, 62
+
+# Where an Apply Solar Profile block gets its four curve values. A param marked
+# with `only` is shown and validated for just that source.
+CURVE_MANUAL = "Manual values"
+CURVE_PRESET = "Stored preset"
+
+# What an Export CSV block writes: every step, or only the steps that produced a
+# reading (the shape you want for a chart in Excel).
+EXPORT_ALL = "Every step"
+EXPORT_MEASURED = "Measurements only"
+
+NODE_TYPES = {
+    "start": {"label": "Start", "kind": "terminal", "badge": "START", "params": [],
+              "help": "Where the run begins. Exactly one per scenario."},
+    "end": {"label": "End", "kind": "terminal", "badge": "END", "params": [],
+            "help": "Marks a successful finish."},
+    "target": {"label": "Select Equipment", "kind": "flow", "badge": "TARGET",
+               "params": [{"key": "unit", "label": "Instrument · channel", "type": "unit", "default": ""}],
+               "help": "Points every block after it at a different channel — SAS-01 (@1), SAS-02 (@2) and so "
+                        "on. Nothing is sent to the instrument; it only changes where the following steps go. "
+                        "Without one, a scenario runs against its default target throughout."},
+    "mode": {"label": "Set Mode", "kind": "action", "badge": "MODE",
+             "params": [{"key": "mode", "label": "Operating mode", "type": "select",
+                          "options": ["FIX", "SAS"], "default": "FIX"}],
+             "help": "CURR:MODE — FIX drives a fixed V/I point, SAS follows the programmed array curve."},
+    "setv": {"label": "Set Voltage", "kind": "action", "badge": "SET",
+             "params": [{"key": "volts", "label": "Voltage", "type": "number", "unit": "V",
+                          "default": 28.0, "min": 0, "max": 32, "step": 0.1}],
+             "help": "VOLT — FIX mode only; the instrument answers 315 if the channel is in SAS mode."},
+    "seti": {"label": "Set Current Limit", "kind": "action", "badge": "SET",
+             "params": [{"key": "amps", "label": "Current limit", "type": "number", "unit": "A",
+                          "default": 5.0, "min": 0, "max": 6, "step": 0.1}],
+             "help": "CURR — FIX mode only."},
+    "sas": {"label": "Apply Solar Profile", "kind": "action", "badge": "PROFILE",
+            "params": [{"key": "source", "label": "Curve from", "type": "select",
+                         "options": [CURVE_MANUAL, CURVE_PRESET], "default": CURVE_MANUAL},
+                        {"key": "preset", "label": "Stored preset", "type": "preset", "default": 0,
+                         "only": CURVE_PRESET},
+                        {"key": "isc", "label": "Isc — short circuit", "type": "number", "unit": "A", "default": 4.6, "min": 0, "max": 6, "step": 0.1, "only": CURVE_MANUAL},
+                        {"key": "imp", "label": "Imp — at peak power", "type": "number", "unit": "A", "default": 4.2, "min": 0, "max": 6, "step": 0.1, "only": CURVE_MANUAL},
+                        {"key": "vmp", "label": "Vmp — at peak power", "type": "number", "unit": "V", "default": 28.0, "min": 0, "max": 32, "step": 0.1, "only": CURVE_MANUAL},
+                        {"key": "voc", "label": "Voc — open circuit", "type": "number", "unit": "V", "default": 32.0, "min": 0, "max": 32, "step": 0.1, "only": CURVE_MANUAL}],
+            "help": "The four coupled SAS curve parameters, sent in one message so the instrument validates the "
+                     "curve as a whole. Either type them here or point the block at a stored SAS preset, in which "
+                     "case the preset's values are read at run time — edit the preset and every scenario using it "
+                     "follows."},
+    "output": {"label": "Set Output", "kind": "action", "badge": "OUTPUT",
+               "params": [{"key": "on", "label": "Output state", "type": "select",
+                            "options": ["ON", "OFF"], "default": "ON"}],
+               "help": "OUTP — energises or de-energises the channel, confirmed by readback."},
+    "wait": {"label": "Wait / Delay", "kind": "flow", "badge": "WAIT",
+             "params": [{"key": "ms", "label": "Duration", "type": "number", "unit": "ms",
+                          "default": 5000, "min": 0, "max": 600000, "step": 500}],
+             "help": "Holds the sequence so the output can settle. Nothing is sent to the instrument."},
+    "measure": {"label": "Read V · I · P", "kind": "measure", "badge": "MEASURE", "params": [],
+                "help": "MEAS:VOLT? / FETC:CURR? — takes a fresh reading and keeps it for the steps that follow."},
+    "threshold": {"label": "Threshold Check", "kind": "logic", "badge": "CHECK",
+                  "params": [{"key": "source", "label": "Source", "type": "select",
+                               "options": ["power", "voltage", "current"], "default": "power"},
+                              {"key": "op", "label": "Operator", "type": "select",
+                               "options": [">", ">=", "<", "<=" ], "default": ">"},
+                              {"key": "value", "label": "Threshold", "type": "number", "unit": "", "default": 100.0, "step": 1}],
+                  "help": "Compares the last reading. Pass follows the solid edge; fail follows the dashed one."},
+    "record": {"label": "Record Measurement", "kind": "measure", "badge": "RECORD", "params": [],
+               "help": "Writes the last reading into the run log."},
+    "export": {"label": "Export CSV", "kind": "measure", "badge": "EXPORT",
+               "params": [{"key": "what", "label": "Rows to write", "type": "select",
+                            "options": [EXPORT_ALL, EXPORT_MEASURED], "default": EXPORT_ALL}],
+               "help": "Writes the run so far to a CSV file on the server — one row per step, with the exact "
+                        "SCPI sent, the instrument's reply, the latency and the measured V/I/P. It captures "
+                        "the steps before it, so put it late in the scenario. For the finished run in full, "
+                        "use the download buttons under the command history."},
+    "shutdown": {"label": "Safe Shutdown", "kind": "danger", "badge": "SAFETY", "params": [],
+                 "help": "OUTP OFF — de-energises the channel and ends the run."},
+}
+
+# The default scenario seeded into a fresh database: a FIX-mode cycle that runs
+# cleanly end to end against a real instrument.
+DEFAULT_SCENARIO_ID = "eclipse-cycle-panel-a"
+DEFAULT_NODES = [
+    ("n_start", "start", 40, 60, {}),
+    ("n_mode", "mode", 220, 60, {"mode": "FIX"}),
+    ("n_setv", "setv", 420, 60, {"volts": 28.0}),
+    ("n_seti", "seti", 620, 60, {"amps": 5.0}),
+    ("n_on", "output", 820, 60, {"on": "ON"}),
+    ("n_wait", "wait", 820, 200, {"ms": 3000}),
+    ("n_read", "measure", 620, 200, {}),
+    ("n_check", "threshold", 420, 200, {"source": "power", "op": ">", "value": 100.0}),
+    ("n_record", "record", 220, 200, {}),
+    ("n_off", "output", 40, 200, {"on": "OFF"}),
+    ("n_end", "end", 40, 340, {}),
+    ("n_safe", "shutdown", 420, 340, {}),
+]
+DEFAULT_EDGES = [
+    ("n_start", "n_mode", False), ("n_mode", "n_setv", False), ("n_setv", "n_seti", False),
+    ("n_seti", "n_on", False), ("n_on", "n_wait", False), ("n_wait", "n_read", False),
+    ("n_read", "n_check", False), ("n_check", "n_record", False), ("n_record", "n_off", False),
+    ("n_off", "n_end", False), ("n_check", "n_safe", True),
+]
+
 NODE_DEFS = [
     {"id": "start", "type": "START", "label": "Start", "x": 50, "y": 50, "kind": "terminal"},
     {"id": "profile", "type": "PROFILE", "label": "Apply Solar Profile", "sub": "BOL_GEO_28V", "x": 255, "y": 50, "kind": "action"},
@@ -125,6 +236,12 @@ TERM_CMDS = [
 ]
 
 FP_MENU = ["Output On/Off", "Set Voltage", "Set Current Limit", "Mode FIX / SAS", "Clear Protection", "I/O Configuration"]
+
+# Who manual actions are attributed to in the audit log. The platform has no
+# sign-in yet, so every operator is this one account; defined here rather than
+# restated per router so the log cannot disagree with itself.
+DEFAULT_USER = "root"
+DEFAULT_ROLE = "Admin"
 
 OPERATIONAL_LIMITS = {
     "max_voltage_v": 32.0,

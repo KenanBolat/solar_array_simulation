@@ -12,9 +12,11 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       <HeaderProvider>
         <AppUiProvider>
           <Sidebar />
-          <div className="flex h-screen flex-1 flex-col">
+          {/* min-w-0 lets this column shrink below its content width; without it a
+              wide child (the scenario canvas) pushes the whole page sideways. */}
+          <div className="flex h-screen min-w-0 flex-1 flex-col">
             <TopBar />
-            <div className="flex-1 overflow-auto">{children}</div>
+            <div className="min-w-0 flex-1 overflow-auto">{children}</div>
           </div>
         </AppUiProvider>
       </HeaderProvider>

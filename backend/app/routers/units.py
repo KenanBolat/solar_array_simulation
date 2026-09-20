@@ -11,7 +11,7 @@ from ..scpi import TRANSPORTS, CommandResult, Instrument, close_all_sessions, cl
 
 router = APIRouter(prefix="/api/units", tags=["units"])
 
-USER = "a.ng"
+USER = data.DEFAULT_USER
 MAX_V = data.OPERATIONAL_LIMITS["max_voltage_v"]
 MAX_I = data.OPERATIONAL_LIMITS["max_current_a"]
 

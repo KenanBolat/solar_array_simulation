@@ -1,4 +1,3 @@
-import asyncio
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.orm import Session
@@ -17,9 +16,6 @@ RANGE_WINDOW = {
     "24 hours": timedelta(hours=24),
     "Custom": timedelta(minutes=30),
 }
-
-_run_tasks: dict[str, asyncio.Task] = {}
-
 
 def now_hhmmss():
     return datetime.now(timezone.utc).strftime("%H:%M:%S")
@@ -522,90 +518,9 @@ def run_detail(db: Session, run_id: str):
     d = _run_dict(r)
     events = (db.query(orm.ScenarioRunEvent).filter(orm.ScenarioRunEvent.run_id == run_id)
               .order_by(orm.ScenarioRunEvent.id.asc()).all())
-    d["events"] = [{"t": e.t, "node": e.node, "lvl": e.lvl, "m": e.m} for e in events]
+    d["events"] = [{"t": e.t, "node": e.node, "lvl": e.lvl, "m": e.m,
+                     "scpi": e.scpi, "resp": e.response, "lat": e.latency_ms} for e in events]
     return d
-
-
-def create_run(db: Session, scenario: str, version: str, targets: list[str], by: str = "a.ng", dry: bool = False):
-    count = db.query(orm.ScenarioRun).count()
-    run_id = f"RUN-{8843 + count}"
-    db.add(orm.ScenarioRun(id=run_id, scenario=scenario, version=version, status="Queued",
-                            dry=dry, progress=0, targets=",".join(targets), by=by,
-                            started=now_hhmmss(), finished="—", dur="0s"))
-    db.commit()
-    return run_id
-
-
-async def start_run(run_id: str):
-    with session_scope() as db:
-        r = db.get(orm.ScenarioRun, run_id)
-        if not r or r.status == "Running":
-            return
-        r.status, r.progress, r.finished = "Running", 0, "—"
-        r.started = now_hhmmss()
-        db.add(orm.ScenarioRunEvent(run_id=run_id, t=now_hhmmss(), node="start", lvl="info",
-                                     m=f"Run accepted — scenario {r.version} approved · {len(r.targets.split(','))} target(s)"))
-
-    steps = ["profile", "setv", "enable", "wait", "read", "thresh", "record", "disable", "end"]
-
-    async def _drive():
-        for idx, step in enumerate(steps):
-            await asyncio.sleep(1.2)
-            with session_scope() as db:
-                r = db.get(orm.ScenarioRun, run_id)
-                if not r or r.status != "Running":
-                    return
-                r.progress = round((idx + 1) / len(steps) * 100)
-                db.add(orm.ScenarioRunEvent(run_id=run_id, t=now_hhmmss(), node=step, lvl="ok", m=f"{step} → completed"))
-        with session_scope() as db:
-            r = db.get(orm.ScenarioRun, run_id)
-            if r and r.status == "Running":
-                r.status, r.progress, r.finished = "Completed", 100, now_hhmmss()
-                db.add(orm.ScenarioRunEvent(run_id=run_id, t=now_hhmmss(), node="end", lvl="ok", m="Run completed"))
-
-    _run_tasks[run_id] = asyncio.create_task(_drive())
-
-
-def pause_run(db: Session, run_id: str):
-    r = db.get(orm.ScenarioRun, run_id)
-    if r and r.status == "Running":
-        return {"ok": True, "message": f"Pause requested · {run_id}"}
-    return {"ok": False, "message": "Run is not active"}
-
-
-def abort_run(db: Session, run_id: str):
-    r = db.get(orm.ScenarioRun, run_id)
-    if not r or r.status != "Running":
-        return {"ok": False, "message": "Run is not active"}
-    task = _run_tasks.pop(run_id, None)
-    if task:
-        task.cancel()
-    r.status, r.finished = "Aborted", now_hhmmss()
-    db.add(orm.ScenarioRunEvent(run_id=run_id, t=now_hhmmss(), node="shutdown", lvl="err",
-                                 m="Abort dispatched · safe_shutdown on all targets"))
-    db.commit()
-    return {"ok": True, "message": f"Abort dispatched · {run_id}"}
-
-
-# ---------- scenario builder (static demo graph, not persisted) ----------
-def scenario_graph():
-    nodes = [dict(n) for n in data.NODE_DEFS]
-    edges = [{"from": a, "to": b, "kind": k, "fail": f} for a, b, k, f in data.EDGE_DEFS]
-    return {"scenario": data.SCENARIO, "nodes": nodes, "edges": edges, "palette": data.NODE_PALETTE}
-
-
-def node_props(node_id: str):
-    if node_id in data.NODE_PROPS_OVERRIDE:
-        return data.NODE_PROPS_OVERRIDE[node_id]
-    n = next((n for n in data.NODE_DEFS if n["id"] == node_id), None)
-    if not n:
-        return None
-    return {
-        "name": n["label"], "target": "Scenario default group",
-        "params": [["Type", n["type"]], ["Value", n.get("sub", "—")]],
-        "delay": "0 ms", "timeout": "5 000 ms", "retry": "0 retries",
-        "fail": "Abort scenario", "comments": "—",
-    }
 
 
 # ---------- configuration ----------
@@ -676,8 +591,14 @@ def delete_rack(db: Session, rack_id: str):
 
 
 def config_racks(db: Session):
-    return [{"id": r.id, "name": r.name, "loc": r.loc, "cap": r.cap, "unitsAssigned": len(r.units)}
-            for r in db.query(orm.Rack).all()]
+    # A slot holds a mainframe, and all of its channels share that slot, so counting
+    # units would show a 4-slot rack as full with two dual-channel instruments in it.
+    return [{"id": r.id, "name": r.name, "loc": r.loc, "cap": r.cap,
+             "unitsAssigned": len(r.units),
+             "instruments": len({instrument_name(u) for u in r.units}),
+             "slotsUsed": len({u.slot for u in r.units}),
+             "slotsFree": max(0, r.cap - len({u.slot for u in r.units}))}
+            for r in db.query(orm.Rack).order_by(orm.Rack.id).all()]
 
 
 def rack_slots(db: Session, rack_id: str):

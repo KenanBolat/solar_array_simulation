@@ -107,6 +107,17 @@ disable / edit addressing) with:
 Platform-level soft limits (32 V / 6 A, `data.OPERATIONAL_LIMITS`) are enforced before a
 command is sent; the instrument enforces its own module ratings on top.
 
+The other entries in `OPERATIONAL_LIMITS` — max power, allowed output state, the two power
+thresholds and `safe_shutdown_rule` — are **declared but not enforced**: nothing compares a
+live reading against them and no automatic shutdown is armed. Configuration → Operational
+Limits labels them as such. The working equivalent today is a scenario's own **Threshold
+Check → Safe Shutdown** path, which does measure, compare and de-energise. All of these
+values are read from `backend/app/data.py` at start and are deliberately not editable from
+the browser — the voltage and current ceilings are the last guard before a real output.
+
+There is no sign-in. Every manual action is attributed to `data.DEFAULT_USER` (`root`) in
+the audit log; scenario steps are logged as `scenario`.
+
 ### Channels
 
 An E4360 mainframe holds up to two output modules, and **one unit here is one
@@ -116,6 +127,27 @@ mainframe `SYST:CHAN?` and creates a unit for any channel not set up yet (named
 `<unit>-CH<n>`). Measurements groups the channel chips by mainframe and plots all
 of them by default. A mainframe is identified by its full address, not just its
 IP — two units can share an IP and differ by port.
+
+### SAS mode on the Virtual Front Panel
+
+The panel programs the four coupled curve parameters two ways:
+
+- **Menu → Set SAS Curve** lists Isc, Imp, Vmp and Voc. Select one, type a value on
+  the keypad (or nudge it with ▲▼), press Enter, and repeat. Values are held in a
+  draft — a `*` in the header marks unsaved edits and any value differing from the
+  channel is shown next to what the instrument is actually holding. **Apply Curve**
+  sends all four in one message, because the instrument validates them as a set.
+  The Apply row doubles as the check: it shows live Pmp, or refuses with the reason
+  (`Imp must not exceed Isc (321)`) before anything is dispatched.
+- **Menu → Recall preset** applies a stored SAS preset in one step.
+
+The meter screen shows the curve the channel holds (`Vmp 24.5V Imp 4.20A Voc 32.0V`)
+while in SAS mode, where the FIX current limit means nothing. Entering a voltage or
+current while the channel is in SAS warns before you type and reports the
+instrument's `315 Settings conflict` verbatim if you go ahead.
+
+The same four values are editable on the Simulator Control screen (SAS mode panel →
+Program SAS Curve), and from a Scenario Builder *Apply Solar Profile* block.
 
 ### Presets and saved states
 
@@ -233,16 +265,87 @@ seed:
 rm backend/data.db   # optional: fresh schema + seed on next start
 ```
 
+## Scenario Builder
+
+The builder is a real editor over a persisted graph, and the runner walks that graph
+against the instrument.
+
+**Editing.** Drag a block from the left palette onto the canvas to add it; drag a block
+to move it; drag the `○` on a block's right edge onto another block to connect them;
+click a connection to remove it. Selecting a block opens its settings on the right,
+where every parameter is editable — change *Set Voltage* to 21.5 V and that is the value
+`VOLT 21.5,(@1)` carries on the next run. Values are range-checked server-side against
+the same soft limits the front panel uses, so an out-of-range entry is refused with the
+reason rather than silently stored. A **Threshold Check** block has a second, red port
+for its fail path. Positions, parameters and connections all persist.
+
+**Equipment.** A scenario runs against a default channel throughout unless a **Select
+Equipment** block moves it. That block picks any configured instrument and channel —
+`SAS-01 (@1)`, `SAS-02 (@2)` — and every step after it is dispatched there; nothing is
+sent to the instrument by the switch itself. Once a scenario uses more than one channel,
+each block on the canvas says which one it runs on, the command history gains a channel
+column, and every exported CSV row names its own channel rather than the run's whole
+list. The last reading is dropped at a switch, so a Threshold Check can never test one
+channel's measurement against another's.
+
+A run is refused unless **every** channel it may reach is enabled and reachable, not just
+the default — a Select Equipment block pointing at a disabled channel fails validation,
+and one pointing at an unreachable channel is refused at dispatch.
+
+**Solar profiles.** An *Apply Solar Profile* block takes the four coupled curve values
+either typed into the block or from a **stored SAS preset**. A preset is read when the
+block runs, so editing the preset changes every scenario pointing at it, and only
+enabled SAS presets can be selected. Typed values are checked against the instrument's
+own coupling rules (Vmp < Voc, Imp ≤ Isc) before they are stored.
+
+**Validation.** The graph is checked continuously and separates what blocks a run from
+what is merely worth knowing.
+
+*Problems* (Run stays disabled): not exactly one Start, a step with no next step, a block
+unreachable from Start, a missing fail path, a profile block with no usable curve, and —
+because the operating mode is propagated along the edges — a **Set Voltage or Set Current
+that would run while the channel is in SAS mode**, which the instrument refuses with 315
+settings conflict.
+
+*Warnings* (the run is allowed): energising the output in SAS mode with no profile
+programmed on the way there, and a profile block on a path that never leaves FIX mode,
+where the curve is accepted and then ignored.
+
+**CSV export.** An *Export CSV* block writes the run so far to `backend/exports/<run>.csv`
+— it captures the steps before it, so put it late in the scenario. Whether or not the
+scenario has one, the command-history panel offers the finished run as a download, either
+every step or measurements only. Rows carry the run, scenario, target, wall-clock time,
+seconds elapsed, block, level, message, the exact SCPI sent, the instrument's reply, the
+latency, and the measured V/I/P as numbers — so it charts in Excel without cleaning.
+Only the steps that actually took a reading carry one.
+
+**Running.** Each block is dispatched as real SCPI, confirmed by readback and written to
+the audit log. While the run is live:
+
+- a read-only strip at the top shows elapsed time against the estimate, names the block
+  currently executing and counts the steps taken. Its bar is a timeline: a tick marks
+  where each step actually ran (hover for the block and its offset), red for a step that
+  errored. While the run is live the axis is the estimate and the fill stops at 99%, so a
+  bar that has caught up never looks like a finished run — if the run passes its estimate
+  the label says so and the clock keeps counting. On completion the axis becomes the real
+  duration, the bar fills, and it turns green for a completed run or red for a failed or
+  aborted one. Elapsed is measured on the server, so the readout is correct on a machine
+  whose clock differs from the backend host's;
+- each block is colour-coded — **green** ready, **yellow** running, **grey** finished,
+  **red** errored, dimmed for a branch not taken;
+- the panel at the bottom lists every command the run has sent, with the exact SCPI
+  string, the instrument's reply and the round-trip latency.
+
+A run that reaches a **Safe Shutdown** block (because a check failed) finishes as
+`Failed` with the output de-energised; `Aborted` is reserved for an operator pressing
+Abort.
+
 ### What is still simulated
 
-- The **scenario runner** walks the Eclipse Cycle steps as a timed sequence and records
-  events, but does not yet dispatch each step to the instrument. Note the sample
-  scenario's "Set Voltage" step is only valid in FIX mode — after "Apply Solar Profile"
-  (SAS mode) a real instrument would answer 315; the step order needs revisiting before
-  live per-step dispatch.
 - The 24 h of measurement history seeded on first start is synthetic (so charts aren't
   empty); everything from that moment on is real polled data.
-- Save / Validate / Dry Run in the Scenario Builder are placeholders.
+- Scenario versioning is cosmetic — editing a scenario does not bump `v1.4` or keep the
+  previous revision.
 
 ### Offline
 

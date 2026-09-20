@@ -67,6 +67,25 @@ class UpdateRackRequest(BaseModel):
     cap: Optional[int] = None
 
 
+class AddNodeRequest(BaseModel):
+    type: str
+    x: int = 0
+    y: int = 0
+
+
+class UpdateNodeRequest(BaseModel):
+    x: Optional[int] = None
+    y: Optional[int] = None
+    label: Optional[str] = None
+    params: Optional[dict] = None
+
+
+class AddEdgeRequest(BaseModel):
+    src: str
+    dst: str
+    fail: bool = False
+
+
 class AssignRequest(BaseModel):
     slot: str
     unitName: str

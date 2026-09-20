@@ -6,15 +6,36 @@ import { useUi } from "@/lib/ui-context";
 
 const MODE_LABEL: Record<string, string> = { FIX: "FIX", SAS: "SAS", TABL: "TABL" };
 
-// Top-level soft menu. "Recall preset" and the two state items open submenus;
-// the state slots are the instrument's own *SAV/*RCL locations 0 and 1.
+// Top-level soft menu. Items ending "▸" open a submenu; the state slots are the
+// instrument's own *SAV/*RCL locations 0 and 1. Dispatch is by id, not position,
+// so inserting an item cannot silently re-point the others.
 const FP_MENU = [
-  "Output On/Off", "Set Voltage", "Set Current Limit", "Mode FIX / SAS",
-  "Recall preset ▸", "Recall state *RCL ▸", "Save state *SAV ▸",
-  "Clear Protection", "I/O Configuration",
-];
+  { id: "onoff", label: "Output On/Off" },
+  { id: "volt", label: "Set Voltage" },
+  { id: "curr", label: "Set Current Limit" },
+  { id: "mode", label: "Mode FIX / SAS" },
+  { id: "sas", label: "Set SAS Curve ▸" },
+  { id: "presets", label: "Recall preset ▸" },
+  { id: "recall", label: "Recall state *RCL ▸" },
+  { id: "save", label: "Save state *SAV ▸" },
+  { id: "prot", label: "Clear Protection" },
+  { id: "io", label: "I/O Configuration" },
+] as const;
 
-type Mode = "meter" | "entry" | "menu" | "presets" | "recall" | "save";
+/** The four coupled curve parameters, in the order the panel lists them. */
+const SAS_FIELDS = [
+  { key: "isc", label: "ISC", title: "Isc — short circuit", unit: "A", axis: "I" },
+  { key: "imp", label: "IMP", title: "Imp — at peak power", unit: "A", axis: "I" },
+  { key: "vmp", label: "VMP", title: "Vmp — at peak power", unit: "V", axis: "V" },
+  { key: "voc", label: "VOC", title: "Voc — open circuit", unit: "V", axis: "V" },
+] as const;
+
+type SasKey = (typeof SAS_FIELDS)[number]["key"];
+type Field = "VOLTAGE" | "CURRENT" | SasKey;
+type Mode = "meter" | "entry" | "menu" | "presets" | "recall" | "save" | "sas";
+
+const isSasField = (f: Field | null): f is SasKey =>
+  !!f && SAS_FIELDS.some((s) => s.key === f);
 
 function shortError(e: unknown): string {
   const msg = e instanceof Error ? e.message : String(e);
@@ -30,9 +51,14 @@ export function FrontPanelModal({ unitName, onClose, onChanged }: { unitName: st
   const { data: unit, reload } = usePoll(() => api.unit(unitName), 1500, [unitName]);
   const { data: presetData } = usePoll(() => api.presets(), 20000);
   const presets = (presetData?.presets ?? []).filter((p) => p.enabled);
+  // The platform ceiling, read from the backend rather than restated here, so the
+  // panel and the rest of the app can never disagree about what is allowed.
+  const { data: limits } = usePoll(() => api.configLimits(), 60000);
+  const maxV: number = limits?.max_voltage_v ?? 32;
+  const maxI: number = limits?.max_current_a ?? 6;
 
   const [mode, setMode] = useState<Mode>("meter");
-  const [field, setField] = useState<"VOLTAGE" | "CURRENT" | null>(null);
+  const [field, setField] = useState<Field | null>(null);
   const [buf, setBuf] = useState("");
   const [menuIdx, setMenuIdx] = useState(0);
   const [flash, setFlash] = useState<string | null>(null);
@@ -40,11 +66,23 @@ export function FrontPanelModal({ unitName, onClose, onChanged }: { unitName: st
   const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [voltSet, setVoltSet] = useState(0);
   const [currSet, setCurrSet] = useState(0);
+  // The four curve values are collected locally and sent in one message, because
+  // the instrument validates them against each other as a set.
+  const [curve, setCurve] = useState<Record<SasKey, number>>({ isc: 4.6, imp: 4.2, vmp: 28, voc: 32 });
+  const [curveEdited, setCurveEdited] = useState(false);
 
   // The instrument is the source of truth — follow whatever the poller mirrors back.
   useEffect(() => {
     if (unit) { setVoltSet(unit.voltageSetpoint); setCurrSet(unit.currentLimit); }
   }, [unit?.voltageSetpoint, unit?.currentLimit]);
+
+  // Seed the draft from the curve the channel is actually holding, but stop once
+  // the operator has started typing so a poll cannot overwrite their entry.
+  useEffect(() => {
+    if (unit?.sas && !curveEdited) {
+      setCurve({ isc: unit.sas.isc, imp: unit.sas.imp, vmp: unit.sas.vmp, voc: unit.sas.voc });
+    }
+  }, [unit?.sas?.isc, unit?.sas?.imp, unit?.sas?.vmp, unit?.sas?.voc, curveEdited]);
 
   const doFlash = (msg: string, ms = 1400) => {
     setFlash(msg);
@@ -95,12 +133,29 @@ export function FrontPanelModal({ unitName, onClose, onChanged }: { unitName: st
   const saveState = (slot: number) =>
     send(`*SAV ${slot}`, () => api.saveState(unitName, slot), `*SAV ${slot}\nSTATE STORED`);
 
+  /** Sends the four values together, after the coupling checks the instrument
+   *  itself applies — catching them here names the fault instead of a bare code. */
+  const applyCurve = async () => {
+    if (curve.vmp >= curve.voc) { doFlash("REJECTED 320\nVMP MUST BE BELOW VOC", 2600); return; }
+    if (curve.imp > curve.isc) { doFlash("REJECTED 321\nIMP MUST NOT EXCEED ISC", 2600); return; }
+    await send(
+      `CURR:SAS:ISC ${curve.isc},(@${chan});IMP ${curve.imp},(@${chan});:VOLT:SAS:VMP ${curve.vmp},(@${chan});VOC ${curve.voc},(@${chan})`,
+      () => api.setSasCurve(unitName, curve),
+      `SAS CURVE PROGRAMMED\nPMP ${(curve.vmp * curve.imp).toFixed(1)} W` +
+        (unit.opMode === "SAS" ? "" : "\nSWITCH TO SAS TO DRIVE OUTPUT"));
+    setCurveEdited(false);
+  };
+
   const func = (name: string) => {
     if (name === "voltage") { setMode("entry"); setField("VOLTAGE"); setBuf(""); }
     else if (name === "current") { setMode("entry"); setField("CURRENT"); setBuf(""); }
     else if (name === "meter") setMode("meter");
     else if (name === "menu") { setMode("menu"); setMenuIdx(0); }
-    else if (name === "back") { setMode(mode === "meter" || mode === "menu" ? "meter" : "menu"); setBuf(""); setMenuIdx(0); }
+    else if (name === "back") {
+      // Backing out of a curve value returns to the curve screen, not the main menu.
+      if (mode === "entry" && isSasField(field)) { setMode("sas"); setBuf(""); return; }
+      setMode(mode === "meter" || mode === "menu" ? "meter" : "menu"); setBuf(""); setMenuIdx(0);
+    }
     else if (name === "channel") doFlash(`CHANNEL (@${chan}) · FIXED IN CONFIG`);
     else if (name === "help") doFlash("USE NAV + SEL · DIGITS THEN ENTER");
     else if (name === "error") doFlash(unit.questionable ? `STAT:QUES:COND? +${unit.questionable}\nPROTECTION TRIPPED` : "STAT:QUES:COND? +0\nNO FAULTS");
@@ -123,20 +178,35 @@ export function FrontPanelModal({ unitName, onClose, onChanged }: { unitName: st
     if (mode !== "entry") { doFlash("NOTHING TO ENTER"); return; }
     const val = parseFloat(buf);
     if (isNaN(val)) { doFlash("INVALID ENTRY"); return; }
-    setMode("meter"); setBuf("");
+    setBuf("");
+    // A curve value is held in the draft; nothing reaches the instrument until
+    // Apply, because the four are validated and sent as one message.
+    if (isSasField(field)) {
+      const spec = SAS_FIELDS.find((s) => s.key === field)!;
+      setCurve((c) => ({ ...c, [field]: Math.max(0, Math.min(spec.axis === "V" ? maxV : maxI, val)) }));
+      setCurveEdited(true);
+      setMode("sas");
+      setMenuIdx(SAS_FIELDS.findIndex((s) => s.key === field));
+      return;
+    }
+    setMode("meter");
     if (field === "VOLTAGE") {
-      const v = Math.max(0, Math.min(32, val));
+      const v = Math.max(0, Math.min(maxV, val));
       await send(`VOLT ${v},(@${chan})`, () => api.setSetpoint(unitName, { voltage: v }), `VOLT ${v.toFixed(2)} V SET · READBACK OK`);
     } else {
-      const a = Math.max(0, Math.min(6, val));
+      const a = Math.max(0, Math.min(maxI, val));
       await send(`CURR ${a},(@${chan})`, () => api.setSetpoint(unitName, { currentLimit: a }), `CURR ${a.toFixed(2)} A SET · READBACK OK`);
     }
   };
 
-  const listLength = mode === "presets" ? Math.max(1, presets.length) : mode === "menu" ? FP_MENU.length : 2;
+  // The SAS submenu lists the four values plus an Apply row.
+  const listLength = mode === "presets" ? Math.max(1, presets.length)
+    : mode === "menu" ? FP_MENU.length
+      : mode === "sas" ? SAS_FIELDS.length + 1
+        : 2;
 
   const nav = async (dir: "up" | "down" | "left" | "right" | "sel") => {
-    if (mode === "menu" || mode === "presets" || mode === "recall" || mode === "save") {
+    if (mode === "menu" || mode === "presets" || mode === "recall" || mode === "save" || mode === "sas") {
       if (dir === "up") { setMenuIdx((i) => (i + listLength - 1) % listLength); return; }
       if (dir === "down") { setMenuIdx((i) => (i + 1) % listLength); return; }
       if (dir === "left") { setMode(mode === "menu" ? "meter" : "menu"); setMenuIdx(0); return; }
@@ -152,25 +222,40 @@ export function FrontPanelModal({ unitName, onClose, onChanged }: { unitName: st
       }
       if (mode === "recall") { setMode("meter"); await recallState(menuIdx); return; }
       if (mode === "save") { setMode("meter"); await saveState(menuIdx); return; }
+      if (mode === "sas") {
+        const spec = SAS_FIELDS[menuIdx];
+        if (spec) { setMode("entry"); setField(spec.key); setBuf(""); }
+        else { setMode("meter"); await applyCurve(); }
+        return;
+      }
 
-      if (menuIdx === 0) func("onoff");
-      else if (menuIdx === 1) { setMode("entry"); setField("VOLTAGE"); setBuf(""); }
-      else if (menuIdx === 2) { setMode("entry"); setField("CURRENT"); setBuf(""); }
-      else if (menuIdx === 3) toggleMode();
-      else if (menuIdx === 4) { setMode("presets"); setMenuIdx(0); }
-      else if (menuIdx === 5) { setMode("recall"); setMenuIdx(0); }
-      else if (menuIdx === 6) { setMode("save"); setMenuIdx(0); }
-      else if (menuIdx === 7) clearProtection();
-      else doFlash(`${unit.ipAddress}:${unit.scpiPort} ${unit.transport.toUpperCase()}\n${unit.visa}`, 3000);
+      switch (FP_MENU[menuIdx].id) {
+        case "onoff": func("onoff"); break;
+        case "volt": setMode("entry"); setField("VOLTAGE"); setBuf(""); break;
+        case "curr": setMode("entry"); setField("CURRENT"); setBuf(""); break;
+        case "mode": toggleMode(); break;
+        case "sas": setMode("sas"); setMenuIdx(0); break;
+        case "presets": setMode("presets"); setMenuIdx(0); break;
+        case "recall": setMode("recall"); setMenuIdx(0); break;
+        case "save": setMode("save"); setMenuIdx(0); break;
+        case "prot": clearProtection(); break;
+        default: doFlash(`${unit.ipAddress}:${unit.scpiPort} ${unit.transport.toUpperCase()}\n${unit.visa}`, 3000);
+      }
       return;
     }
     if (dir === "up" || dir === "down") {
       const d = dir === "up" ? 0.1 : -0.1;
-      if (field === "CURRENT") {
-        const a = Math.max(0, Math.min(6, +(currSet + d).toFixed(2)));
+      // Nudging a curve value stays in the draft, like typing one does.
+      if (isSasField(field)) {
+        const spec = SAS_FIELDS.find((s) => s.key === field)!;
+        const hi = spec.axis === "V" ? maxV : maxI;
+        setCurve((c) => ({ ...c, [spec.key]: Math.max(0, Math.min(hi, +(c[spec.key] + d).toFixed(2))) }));
+        setCurveEdited(true);
+      } else if (field === "CURRENT") {
+        const a = Math.max(0, Math.min(maxI, +(currSet + d).toFixed(2)));
         await send(`CURR ${a},(@${chan})`, () => api.setSetpoint(unitName, { currentLimit: a }), `CURR ${a.toFixed(2)} A SET`);
       } else {
-        const v = Math.max(0, Math.min(32, +(voltSet + d).toFixed(2)));
+        const v = Math.max(0, Math.min(maxV, +(voltSet + d).toFixed(2)));
         await send(`VOLT ${v},(@${chan})`, () => api.setSetpoint(unitName, { voltage: v }), `VOLT ${v.toFixed(2)} V SET`);
       }
     } else if (dir === "sel") setMode("meter");
@@ -183,11 +268,24 @@ export function FrontPanelModal({ unitName, onClose, onChanged }: { unitName: st
 
   let lcdRows: { text: string; big?: boolean; color?: string }[];
   if (mode === "entry") {
-    const rng = field === "VOLTAGE" ? "0 - 32 V" : "0 - 6 A";
+    const spec = isSasField(field) ? SAS_FIELDS.find((s) => s.key === field)! : null;
+    // VOLT/CURR are refused with 315 in SAS mode; a curve value never is.
+    const clash = !spec && unit.opMode === "SAS";
+    const hi = spec ? (spec.axis === "V" ? maxV : maxI) : field === "VOLTAGE" ? maxV : maxI;
+    const un = spec ? spec.unit : field === "VOLTAGE" ? "V" : "A";
     lcdRows = [
-      { text: "SET " + field + (unit.opMode === "SAS" ? "   (SAS MODE: WILL BE REJECTED 315)" : ""), color: unit.opMode === "SAS" ? "#fbbf24" : "#7be8c8" },
+      {
+        text: spec
+          ? `SET ${spec.label}   ${spec.title}`
+          : "SET " + field + (clash ? "   (SAS MODE: WILL BE REJECTED 315)" : ""),
+        color: clash ? "#fbbf24" : "#7be8c8",
+      },
       { text: "> " + (buf || "") + "█", big: true, color: "#9affd9" },
-      { text: `Range ${rng}  Enter=apply`, color: "#4fbf9c" },
+      {
+        text: `Range 0 - ${hi} ${un}  Enter=${spec ? "keep" : "apply"}` +
+          (spec ? `  (now ${curve[spec.key]} ${un})` : ""),
+        color: "#4fbf9c",
+      },
     ];
   } else if (mode === "menu") {
     // Scroll a 5-line window so a long menu still reads like a real panel.
@@ -196,7 +294,28 @@ export function FrontPanelModal({ unitName, onClose, onChanged }: { unitName: st
     lcdRows = [{ text: `MAIN MENU            ${menuIdx + 1}/${FP_MENU.length}`, color: "#7be8c8" }];
     FP_MENU.slice(start, start + win).forEach((m, i) => {
       const idx = start + i;
-      lcdRows.push({ text: (idx === menuIdx ? "▸ " : "  ") + m, color: idx === menuIdx ? "#9affd9" : "#3f9c80" });
+      lcdRows.push({ text: (idx === menuIdx ? "▸ " : "  ") + m.label, color: idx === menuIdx ? "#9affd9" : "#3f9c80" });
+    });
+  } else if (mode === "sas") {
+    const bad = curve.vmp >= curve.voc ? "Vmp must be below Voc (320)"
+      : curve.imp > curve.isc ? "Imp must not exceed Isc (321)" : "";
+    lcdRows = [{
+      text: `SAS CURVE${curveEdited ? " *" : ""}      Sel=edit  ◄=back`,
+      color: "#7be8c8",
+    }];
+    SAS_FIELDS.forEach((s, i) => {
+      const live = unit.sas ? unit.sas[s.key] : null;
+      const differs = live !== null && Math.abs(live - curve[s.key]) > 1e-6;
+      lcdRows.push({
+        text: (i === menuIdx ? "▸ " : "  ") + `${s.label} ${String(curve[s.key]).padStart(6)} ${s.unit}` +
+          (differs ? `   on instrument ${live} ${s.unit}` : ""),
+        color: i === menuIdx ? "#9affd9" : differs ? "#b48a24" : "#3f9c80",
+      });
+    });
+    lcdRows.push({
+      text: (menuIdx === SAS_FIELDS.length ? "▸ " : "  ") +
+        (bad || `APPLY CURVE   Pmp ${(curve.vmp * curve.imp).toFixed(1)} W`),
+      color: bad ? "#fbbf24" : menuIdx === SAS_FIELDS.length ? "#9affd9" : "#3f9c80",
     });
   } else if (mode === "presets") {
     lcdRows = [{ text: "RECALL PRESET        Sel=apply", color: "#7be8c8" }];
@@ -238,10 +357,17 @@ export function FrontPanelModal({ unitName, onClose, onChanged }: { unitName: st
       { text: (unit.lastError ?? "no reply").slice(0, 96), color: "#b48a24" },
     ];
   } else {
+    // In SAS mode the current limit does not drive anything — the curve does, so
+    // show the curve the channel is actually holding instead.
+    const third = unit.opMode === "SAS"
+      ? (unit.sas
+        ? `Vmp ${unit.sas.vmp.toFixed(1)}V Imp ${unit.sas.imp.toFixed(2)}A Voc ${unit.sas.voc.toFixed(1)}V`
+        : "curve not read")
+      : `Lim ${currSet.toFixed(1)}A`;
     lcdRows = [
       { text: headerRow, color: outputOn ? "#7be8c8" : "#4fbf9c" },
       { text: `${fmtV}   ${fmtI}`, big: true, color: "#9affd9" },
-      { text: `${fmtP}   ${opMode}   Lim ${currSet.toFixed(1)}A${unit.questionable ? "   PROT!" : ""}`, color: unit.questionable ? "#fbbf24" : "#4fbf9c" },
+      { text: `${fmtP}   ${opMode}   ${third}${unit.questionable ? "   PROT!" : ""}`, color: unit.questionable ? "#fbbf24" : "#4fbf9c" },
     ];
   }
 
@@ -379,7 +505,7 @@ export function FrontPanelModal({ unitName, onClose, onChanged }: { unitName: st
           </div>
         </div>
         <div className="mt-2.5 text-center font-mono text-[11px] text-faint">
-          Every key sends a real SCPI message to {unit.ipAddress} and waits for <b className="text-[#cfd6e2]">*OPC?</b> + <b className="text-[#cfd6e2]">SYST:ERR?</b> · <b className="text-[#cfd6e2]">Menu</b> → nav ▲▼ → <b className="text-[#cfd6e2]">Sel</b> for presets and <b className="text-[#cfd6e2]">*SAV</b>/<b className="text-[#cfd6e2]">*RCL</b> state slots · ◄ or <b className="text-[#cfd6e2]">Back</b> steps out
+          Every key sends a real SCPI message to {unit.ipAddress} and waits for <b className="text-[#cfd6e2]">*OPC?</b> + <b className="text-[#cfd6e2]">SYST:ERR?</b> · <b className="text-[#cfd6e2]">Menu</b> → nav ▲▼ → <b className="text-[#cfd6e2]">Sel</b> for the <b className="text-[#cfd6e2]">SAS curve</b>, presets and <b className="text-[#cfd6e2]">*SAV</b>/<b className="text-[#cfd6e2]">*RCL</b> state slots · on the curve screen the four values are typed one at a time and sent together on <b className="text-[#cfd6e2]">Apply</b> · ◄ or <b className="text-[#cfd6e2]">Back</b> steps out
         </div>
       </div>
     </div>

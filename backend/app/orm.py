@@ -1,4 +1,4 @@
-from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Integer, String
+from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import relationship
 
 from .db import Base
@@ -120,10 +120,47 @@ class AlarmRow(Base):
     ackd = Column(Boolean, nullable=False, default=False)
 
 
+class Scenario(Base):
+    __tablename__ = "scenarios"
+    id = Column(String, primary_key=True)
+    name = Column(String, nullable=False)
+    version = Column(String, nullable=False, default="v1.0")
+    state = Column(String, nullable=False, default="DRAFT")
+    target_unit = Column(String, nullable=False, default="")  # empty = the featured unit at run time
+    nodes = relationship("ScenarioNode", back_populates="scenario", cascade="all, delete-orphan")
+    edges = relationship("ScenarioEdge", back_populates="scenario", cascade="all, delete-orphan")
+
+
+class ScenarioNode(Base):
+    """One step of a scenario. `params` is a JSON object whose shape is defined
+    by the node's type in data.NODE_TYPES — that registry is what lets the UI
+    render a typed editor and what the runner reads when dispatching."""
+    __tablename__ = "scenario_nodes"
+    id = Column(String, primary_key=True)              # unique across scenarios
+    scenario_id = Column(String, ForeignKey("scenarios.id"), nullable=False, index=True)
+    type = Column(String, nullable=False)              # key into data.NODE_TYPES
+    label = Column(String, nullable=False, default="")  # operator-editable title
+    x = Column(Integer, nullable=False, default=0)
+    y = Column(Integer, nullable=False, default=0)
+    params = Column(Text, nullable=False, default="{}")
+    scenario = relationship("Scenario", back_populates="nodes")
+
+
+class ScenarioEdge(Base):
+    __tablename__ = "scenario_edges"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    scenario_id = Column(String, ForeignKey("scenarios.id"), nullable=False, index=True)
+    src = Column(String, nullable=False)
+    dst = Column(String, nullable=False)
+    fail = Column(Boolean, nullable=False, default=False)  # the branch taken when a check fails / a step errors
+    scenario = relationship("Scenario", back_populates="edges")
+
+
 class ScenarioRun(Base):
     __tablename__ = "scenario_runs"
     id = Column(String, primary_key=True)
     scenario = Column(String, nullable=False)
+    scenario_id = Column(String, nullable=False, default="")
     version = Column(String, nullable=False)
     status = Column(String, nullable=False)  # Queued | Running | Completed | Aborted | Failed
     dry = Column(Boolean, nullable=False, default=False)
@@ -133,6 +170,13 @@ class ScenarioRun(Base):
     started = Column(String, nullable=False)
     finished = Column(String, nullable=False, default="—")
     dur = Column(String, nullable=False, default="0s")
+    # live view: which block is running, what every block's state is, and the
+    # clock the time indicator reads from
+    current_node = Column(String, nullable=False, default="")
+    node_states = Column(Text, nullable=False, default="{}")  # {nodeId: ready|running|done|error|skipped}
+    started_ms = Column(Integer, nullable=True)
+    ended_ms = Column(Integer, nullable=True)
+    est_ms = Column(Integer, nullable=False, default=0)
 
 
 class ScenarioRunEvent(Base):
@@ -143,3 +187,17 @@ class ScenarioRunEvent(Base):
     node = Column(String, nullable=False)
     lvl = Column(String, nullable=False)  # ok | info | warn | err
     m = Column(String, nullable=False)
+    scpi = Column(String, nullable=False, default="")      # exact program message, when the step sent one
+    response = Column(String, nullable=False, default="")  # readback / query response
+    latency_ms = Column(Integer, nullable=False, default=0)
+    # The reading this step produced, kept as numbers rather than only inside the
+    # message text so a CSV export charts directly. Null means the step took no
+    # reading — distinct from a reading of zero.
+    voltage = Column(Float, nullable=True)
+    current = Column(Float, nullable=True)
+    power = Column(Float, nullable=True)
+    # wall-clock of the step, so exported rows have a real time axis
+    ts_ms = Column(Integer, nullable=True)
+    # the channel this step ran against — a scenario may switch equipment part-way,
+    # so the run's target list is not the answer for any single row
+    unit = Column(String, nullable=False, default="")
