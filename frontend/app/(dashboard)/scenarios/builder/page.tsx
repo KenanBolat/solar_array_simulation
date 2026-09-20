@@ -4,7 +4,10 @@ import { api, SCENARIO_ID } from "@/lib/api";
 import { usePoll } from "@/lib/useApi";
 import { usePageHeader } from "@/lib/header-context";
 import { useUi } from "@/lib/ui-context";
-import type { NodeState, NodeTypeSpec, ScenarioGraph, ScenarioNode } from "@/lib/types";
+import type { NodeState, NodeTypeSpec, Preset, ScenarioGraph, ScenarioNode } from "@/lib/types";
+
+/** Matches data.CURVE_PRESET on the backend. */
+const PRESET_SOURCE = "Stored preset";
 
 const NODE_W = 178, NODE_H = 62;
 
@@ -74,6 +77,9 @@ export default function ScenarioBuilderPage() {
   const isLive = runView?.status === "Running";
 
   const { data: units } = usePoll(() => api.units(), 10000);
+  // Only enabled SAS presets can drive a solar-profile block.
+  const { data: presetData } = usePoll(() => api.presets(), 15000);
+  const sasPresets = (presetData?.presets ?? []).filter((p) => p.mode === "SAS" && p.enabled);
   const targetName = graph?.scenario.targetUnit || units?.find((u) => u.featured)?.name || units?.[0]?.name || "";
   const target = units?.find((u) => u.name === targetName);
   const targetActive = !!target && target.enabled && target.online;
@@ -370,6 +376,8 @@ export default function ScenarioBuilderPage() {
                     className="absolute select-none rounded-md px-2.5 pb-2.5 pt-2"
                     style={{
                       left: n.x, top: n.y, width: NODE_W, minHeight: NODE_H,
+                      // whatever you are working on sits above anything overlapping it
+                      zIndex: isSel || isCurrent ? 2 : 1,
                       cursor: isLive ? "default" : "grab",
                       background: n.kind === "danger" ? "#1f1216" : "#1a1f29",
                       border: `1.5px solid ${style ? style.ring : isSel ? color : color + "66"}`,
@@ -418,9 +426,22 @@ export default function ScenarioBuilderPage() {
 
           {/* command history for this run */}
           <div className="h-[150px] flex-none overflow-auto border-t border-line bg-[#0e1117]">
-            <div className="sticky top-0 flex items-center justify-between border-b border-line bg-[#0e1117] px-3 py-1.5">
+            <div className="sticky top-0 flex items-center gap-3 border-b border-line bg-[#0e1117] px-3 py-1.5">
               <span className="text-[11px] font-semibold">Command history{runView ? ` · ${runView.id}` : ""}</span>
               <span className="font-mono text-[9.5px] text-faint">{runView?.events.length ?? 0} entries · every command this run sent</span>
+              <div className="flex-1" />
+              {runView && (
+                <>
+                  <a href={api.runCsvUrl(runView.id)} download
+                    className="rounded border border-line2 px-2 py-0.5 font-mono text-[9.5px] text-[#cfd6e2] hover:border-cyan/50 hover:text-cyan">
+                    ↓ CSV · every step
+                  </a>
+                  <a href={api.runCsvUrl(runView.id, true)} download
+                    className="rounded border border-line2 px-2 py-0.5 font-mono text-[9.5px] text-[#cfd6e2] hover:border-cyan/50 hover:text-cyan">
+                    ↓ CSV · measurements
+                  </a>
+                </>
+              )}
             </div>
             {(runView?.events ?? []).slice().reverse().map((ev, i) => (
               <div key={i} className="grid items-baseline gap-2 border-b border-[#161b24] px-3 py-1 font-mono text-[10.5px]"
@@ -457,11 +478,22 @@ export default function ScenarioBuilderPage() {
                 </div>
               )}
               <div className="mb-3 flex flex-col gap-2.5">
-                {selSpec.params.map((p) => (
-                  <ParamField key={p.key} spec={p} value={String(sel.params[p.key] ?? "")}
-                    disabled={isLive} onCommit={(v) => saveParam(p.key, v)} />
-                ))}
+                {/* a param marked `only` belongs to one source — hide the other set */}
+                {selSpec.params
+                  .filter((p) => !p.only || p.only === sel.params.source)
+                  .map((p) => (
+                    <ParamField key={p.key} spec={p} value={String(sel.params[p.key] ?? "")}
+                      presets={sasPresets} disabled={isLive} onCommit={(v) => saveParam(p.key, v)} />
+                  ))}
               </div>
+
+              {sel.type === "sas" && sel.params.source === PRESET_SOURCE && (
+                <div className="mb-3 rounded-md border border-line2 bg-bg px-2.5 py-2 text-[10.5px] leading-relaxed text-faint">
+                  Values are read from the preset when the block runs, so editing the preset changes every
+                  scenario that points at it.{" "}
+                  <a href="/config" className="text-cyan underline">Manage presets</a>
+                </div>
+              )}
 
               {stateOf(sel.id) && (
                 <div className="mb-3 rounded-md border px-2.5 py-1.5 text-[11px] font-semibold"
@@ -484,10 +516,20 @@ export default function ScenarioBuilderPage() {
           )}
 
           {!graph.validation.ok && (
-            <div className="mt-3 rounded-md border border-amber/30 bg-amber/[0.06] p-2.5">
-              <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-amber">Not runnable yet</div>
+            <div className="mt-3 rounded-md border border-red/30 bg-red/[0.06] p-2.5">
+              <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-red">Not runnable yet</div>
               {graph.validation.problems.map((p, i) => (
-                <div key={i} className="text-[10.5px] leading-snug text-amber">· {p}</div>
+                <div key={i} className="mb-1 text-[10.5px] leading-snug text-red">· {p}</div>
+              ))}
+            </div>
+          )}
+
+          {/* worth reading, but the run is allowed */}
+          {!!graph.validation.warnings?.length && (
+            <div className="mt-3 rounded-md border border-amber/30 bg-amber/[0.06] p-2.5">
+              <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-amber">Check before running</div>
+              {graph.validation.warnings.map((p, i) => (
+                <div key={i} className="mb-1 text-[10.5px] leading-snug text-amber">· {p}</div>
               ))}
             </div>
           )}
@@ -520,11 +562,35 @@ export default function ScenarioBuilderPage() {
   );
 }
 
-function ParamField({ spec, value, disabled, onCommit }: {
-  spec: NodeTypeSpec["params"][number]; value: string; disabled: boolean; onCommit: (v: string) => void;
+function ParamField({ spec, value, presets, disabled, onCommit }: {
+  spec: NodeTypeSpec["params"][number]; value: string; presets: Preset[];
+  disabled: boolean; onCommit: (v: string) => void;
 }) {
   const [draft, setDraft] = useState(value);
   useEffect(() => { setDraft(value); }, [value]);
+
+  if (spec.type === "preset") {
+    return (
+      <div>
+        <label className="mb-1 block text-[10px] text-faint">{spec.label}</label>
+        <select value={value} disabled={disabled} onChange={(e) => onCommit(e.target.value)}
+          className="w-full rounded-md border bg-bg px-2.5 py-1.5 text-[12px] text-ink disabled:opacity-50"
+          style={{ borderColor: value === "0" ? "#f8717188" : "#232a36" }}>
+          <option value="0">— choose a stored SAS preset —</option>
+          {presets.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.name} · Vmp {p.vmp}V / Imp {p.imp}A
+            </option>
+          ))}
+        </select>
+        {!presets.length && (
+          <div className="mt-1 text-[10px] leading-snug text-amber">
+            No enabled SAS presets stored yet — add one in Configuration.
+          </div>
+        )}
+      </div>
+    );
+  }
 
   if (spec.type === "select") {
     return (

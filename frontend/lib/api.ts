@@ -92,6 +92,8 @@ export const api = {
   runs: (filter: string) => j<Run[]>(`/api/runs?filter=${filter}`),
   run: (id: string) => j<RunDetail>(`/api/runs/${id}`),
   abortRun: (id: string) => j<{ ok: boolean; message: string }>(`/api/runs/${id}/abort`, { method: "POST" }),
+  /** The browser downloads this directly — it is a file, not JSON. */
+  runCsvUrl: (id: string, measured = false) => `/api/runs/${id}/export.csv${measured ? "?measured=true" : ""}`,
 
   scenario: (id: string) => j<ScenarioGraph>(`/api/scenarios/${id}`),
   scenarioRun: (id: string) => j<ScenarioRunView | Record<string, never>>(`/api/scenarios/${id}/run`),

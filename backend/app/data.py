@@ -32,6 +32,21 @@ SCENARIO = {
 # dispatches. Adding a block type here makes it appear in the palette, the
 # editor and the runner at once.
 # ---------------------------------------------------------------------------
+# How large a block is drawn on the builder canvas. The backend needs it only to
+# place a dropped block clear of the ones already there; the frontend owns the
+# rendering and keeps the same numbers.
+BLOCK_W, BLOCK_H = 178, 62
+
+# Where an Apply Solar Profile block gets its four curve values. A param marked
+# with `only` is shown and validated for just that source.
+CURVE_MANUAL = "Manual values"
+CURVE_PRESET = "Stored preset"
+
+# What an Export CSV block writes: every step, or only the steps that produced a
+# reading (the shape you want for a chart in Excel).
+EXPORT_ALL = "Every step"
+EXPORT_MEASURED = "Measurements only"
+
 NODE_TYPES = {
     "start": {"label": "Start", "kind": "terminal", "badge": "START", "params": [],
               "help": "Where the run begins. Exactly one per scenario."},
@@ -50,11 +65,18 @@ NODE_TYPES = {
                           "default": 5.0, "min": 0, "max": 6, "step": 0.1}],
              "help": "CURR — FIX mode only."},
     "sas": {"label": "Apply Solar Profile", "kind": "action", "badge": "PROFILE",
-            "params": [{"key": "isc", "label": "Isc — short circuit", "type": "number", "unit": "A", "default": 4.6, "min": 0, "max": 6, "step": 0.1},
-                        {"key": "imp", "label": "Imp — at peak power", "type": "number", "unit": "A", "default": 4.2, "min": 0, "max": 6, "step": 0.1},
-                        {"key": "vmp", "label": "Vmp — at peak power", "type": "number", "unit": "V", "default": 28.0, "min": 0, "max": 32, "step": 0.1},
-                        {"key": "voc", "label": "Voc — open circuit", "type": "number", "unit": "V", "default": 32.0, "min": 0, "max": 32, "step": 0.1}],
-            "help": "The four coupled SAS curve parameters, sent in one message so the instrument validates the curve as a whole."},
+            "params": [{"key": "source", "label": "Curve from", "type": "select",
+                         "options": [CURVE_MANUAL, CURVE_PRESET], "default": CURVE_MANUAL},
+                        {"key": "preset", "label": "Stored preset", "type": "preset", "default": 0,
+                         "only": CURVE_PRESET},
+                        {"key": "isc", "label": "Isc — short circuit", "type": "number", "unit": "A", "default": 4.6, "min": 0, "max": 6, "step": 0.1, "only": CURVE_MANUAL},
+                        {"key": "imp", "label": "Imp — at peak power", "type": "number", "unit": "A", "default": 4.2, "min": 0, "max": 6, "step": 0.1, "only": CURVE_MANUAL},
+                        {"key": "vmp", "label": "Vmp — at peak power", "type": "number", "unit": "V", "default": 28.0, "min": 0, "max": 32, "step": 0.1, "only": CURVE_MANUAL},
+                        {"key": "voc", "label": "Voc — open circuit", "type": "number", "unit": "V", "default": 32.0, "min": 0, "max": 32, "step": 0.1, "only": CURVE_MANUAL}],
+            "help": "The four coupled SAS curve parameters, sent in one message so the instrument validates the "
+                     "curve as a whole. Either type them here or point the block at a stored SAS preset, in which "
+                     "case the preset's values are read at run time — edit the preset and every scenario using it "
+                     "follows."},
     "output": {"label": "Set Output", "kind": "action", "badge": "OUTPUT",
                "params": [{"key": "on", "label": "Output state", "type": "select",
                             "options": ["ON", "OFF"], "default": "ON"}],
@@ -74,6 +96,13 @@ NODE_TYPES = {
                   "help": "Compares the last reading. Pass follows the solid edge; fail follows the dashed one."},
     "record": {"label": "Record Measurement", "kind": "measure", "badge": "RECORD", "params": [],
                "help": "Writes the last reading into the run log."},
+    "export": {"label": "Export CSV", "kind": "measure", "badge": "EXPORT",
+               "params": [{"key": "what", "label": "Rows to write", "type": "select",
+                            "options": [EXPORT_ALL, EXPORT_MEASURED], "default": EXPORT_ALL}],
+               "help": "Writes the run so far to a CSV file on the server — one row per step, with the exact "
+                        "SCPI sent, the instrument's reply, the latency and the measured V/I/P. It captures "
+                        "the steps before it, so put it late in the scenario. For the finished run in full, "
+                        "use the download buttons under the command history."},
     "shutdown": {"label": "Safe Shutdown", "kind": "danger", "badge": "SAFETY", "params": [],
                  "help": "OUTP OFF — de-energises the channel and ends the run."},
 }

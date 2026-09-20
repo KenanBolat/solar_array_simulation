@@ -247,9 +247,32 @@ the same soft limits the front panel uses, so an out-of-range entry is refused w
 reason rather than silently stored. A **Threshold Check** block has a second, red port
 for its fail path. Positions, parameters and connections all persist.
 
-**Validation.** The graph is checked continuously — exactly one Start, no step without a
-next step, no block unreachable from Start, a fail path where one is required. Run is
-disabled until it passes and the problems are listed under the inspector.
+**Solar profiles.** An *Apply Solar Profile* block takes the four coupled curve values
+either typed into the block or from a **stored SAS preset**. A preset is read when the
+block runs, so editing the preset changes every scenario pointing at it, and only
+enabled SAS presets can be selected. Typed values are checked against the instrument's
+own coupling rules (Vmp < Voc, Imp ≤ Isc) before they are stored.
+
+**Validation.** The graph is checked continuously and separates what blocks a run from
+what is merely worth knowing.
+
+*Problems* (Run stays disabled): not exactly one Start, a step with no next step, a block
+unreachable from Start, a missing fail path, a profile block with no usable curve, and —
+because the operating mode is propagated along the edges — a **Set Voltage or Set Current
+that would run while the channel is in SAS mode**, which the instrument refuses with 315
+settings conflict.
+
+*Warnings* (the run is allowed): energising the output in SAS mode with no profile
+programmed on the way there, and a profile block on a path that never leaves FIX mode,
+where the curve is accepted and then ignored.
+
+**CSV export.** An *Export CSV* block writes the run so far to `backend/exports/<run>.csv`
+— it captures the steps before it, so put it late in the scenario. Whether or not the
+scenario has one, the command-history panel offers the finished run as a download, either
+every step or measurements only. Rows carry the run, scenario, target, wall-clock time,
+seconds elapsed, block, level, message, the exact SCPI sent, the instrument's reply, the
+latency, and the measured V/I/P as numbers — so it charts in Excel without cleaning.
+Only the steps that actually took a reading carry one.
 
 **Running.** Each block is dispatched as real SCPI, confirmed by readback and written to
 the audit log. While the run is live:

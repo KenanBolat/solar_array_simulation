@@ -13,11 +13,14 @@ command history for that run alone.
 from __future__ import annotations
 
 import asyncio
+import csv
+import io
 import json
 import logging
 import time
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 
 from sqlalchemy.orm import Session
 
@@ -49,15 +52,39 @@ def node_defaults(node_type: str) -> dict:
     return {p["key"]: p.get("default") for p in spec["params"]} if spec else {}
 
 
-def _node_dict(n: orm.ScenarioNode) -> dict:
+def resolve_curve(db: Session, params: dict) -> tuple[dict | None, str]:
+    """The four SAS values an Apply Solar Profile block will actually send, and a
+    caption naming where they came from. Returns (None, reason) when the block
+    points at a preset that can no longer be used."""
+    if params.get("source") != data.CURVE_PRESET:
+        return ({k: float(params.get(k, 0) or 0) for k in ("isc", "imp", "vmp", "voc")}, "typed values")
+    pid = int(params.get("preset") or 0)
+    if not pid:
+        return None, "no preset chosen"
+    pr = db.get(orm.Preset, pid)
+    if not pr:
+        return None, "preset was deleted"
+    if pr.mode != "SAS":
+        return None, f"{pr.name} is a FIX preset"
+    if not pr.enabled:
+        return None, f"preset {pr.name} is disabled"
+    return {"isc": pr.isc, "imp": pr.imp, "vmp": pr.vmp, "voc": pr.voc}, f"preset {pr.name}"
+
+
+def _node_dict(n: orm.ScenarioNode, db: Session | None = None) -> dict:
     spec = data.NODE_TYPES.get(n.type, {})
     params = {**node_defaults(n.type), **json.loads(n.params or "{}")}
+    sub = summarise(n.type, params)
+    if n.type == "sas" and db is not None:
+        curve, why = resolve_curve(db, params)
+        sub = (f"{why} · Vmp {curve['vmp']:g} V · Imp {curve['imp']:g} A" if curve
+               else f"⚠ {why}")
     return {
         "id": n.id, "type": n.type, "kind": spec.get("kind", "action"),
         "badge": spec.get("badge", n.type.upper()),
         "label": n.label or spec.get("label", n.type),
         "x": n.x, "y": n.y, "params": params,
-        "sub": summarise(n.type, params),
+        "sub": sub,
         "help": spec.get("help", ""),
     }
 
@@ -97,7 +124,7 @@ def graph(db: Session, scenario_id: str) -> dict | None:
         # so the canvas can never name a different channel than the one dispatched to.
         "scenario": {"id": s.id, "name": s.name, "version": s.version, "state": s.state,
                       "targetUnit": s.target_unit or data.FEATURED_UNIT},
-        "nodes": [_node_dict(n) for n in sorted(s.nodes, key=lambda n: n.id)],
+        "nodes": [_node_dict(n, db) for n in sorted(s.nodes, key=lambda n: n.id)],
         "edges": [{"id": e.id, "from": e.src, "to": e.dst, "fail": e.fail} for e in s.edges],
         "nodeTypes": [{"type": k, **v} for k, v in data.NODE_TYPES.items()],
     }
@@ -116,16 +143,22 @@ def add_node(db: Session, scenario_id: str, node_type: str, x: int, y: int) -> d
         raise ValueError("Unknown scenario")
     if node_type == "start" and any(n.type == "start" for n in s.nodes):
         raise ValueError("A scenario has exactly one Start block")
-    # Nudge the drop point if a block already sits there: perfectly stacked blocks
-    # hide each other and the one underneath can no longer be clicked or dragged.
+    # Slide the drop point clear of any block already there: an overlapped block
+    # hides the one under it, which can then no longer be clicked or dragged.
+    w, h = data.BLOCK_W + 16, data.BLOCK_H + 16
     x, y = max(0, int(x)), max(0, int(y))
-    while any(abs(o.x - x) < 24 and abs(o.y - y) < 24 for o in s.nodes):
-        x, y = x + 26, y + 26
+    for _ in range(200):
+        clash = next((o for o in s.nodes if abs(o.x - x) < w and abs(o.y - y) < h), None)
+        if not clash:
+            break
+        x, y = clash.x + w, y
+        if x > 1400 - data.BLOCK_W:            # ran off the right edge — next row down
+            x, y = 40, y + h
     n = orm.ScenarioNode(id=f"n_{uuid.uuid4().hex[:8]}", scenario_id=scenario_id, type=node_type,
                           label="", x=x, y=y, params=json.dumps(node_defaults(node_type)))
     db.add(n)
     db.commit()
-    return _node_dict(n)
+    return _node_dict(n, db)
 
 
 def update_node(db: Session, node_id: str, x=None, y=None, params=None, label=None) -> dict | None:
@@ -150,7 +183,16 @@ def update_node(db: Session, node_id: str, x=None, y=None, params=None, label=No
             if p["key"] not in params:
                 continue
             raw = params[p["key"]]
-            if p["type"] == "number":
+            if p["type"] == "preset":
+                pid = int(raw or 0)
+                if pid:
+                    pr = db.get(orm.Preset, pid)
+                    if not pr:
+                        raise ValueError("That preset no longer exists")
+                    if pr.mode != "SAS":
+                        raise ValueError(f"{pr.name} is a FIX preset — this block needs a SAS one")
+                current[p["key"]] = pid
+            elif p["type"] == "number":
                 try:
                     val = float(raw)
                 except (TypeError, ValueError):
@@ -163,11 +205,13 @@ def update_node(db: Session, node_id: str, x=None, y=None, params=None, label=No
                 if raw not in p.get("options", []):
                     raise ValueError(f"{p['label']} must be one of {', '.join(p.get('options', []))}")
                 current[p["key"]] = raw
-        if n.type == "sas":  # the coupling rules the instrument itself enforces
+        # The coupling rules the instrument itself enforces. A preset was already
+        # checked against them when it was stored, so only typed values are re-checked.
+        if n.type == "sas" and current.get("source") != data.CURVE_PRESET:
             state.check_soft_limits("SAS", current)
         n.params = json.dumps(current)
     db.commit()
-    return _node_dict(n)
+    return _node_dict(n, db)
 
 
 def delete_node(db: Session, node_id: str) -> bool:
@@ -253,19 +297,65 @@ def validate(db: Session, scenario_id: str) -> dict:
             problems.append(f"{n['label']} has no next step")
         if n["type"] == "threshold" and not any(e["fail"] for e in out[n["id"]]):
             problems.append(f"{n['label']} has no fail path")
-    # unreachable blocks
+    # a solar profile block must have a curve it can actually send
+    for n in nodes.values():
+        if n["type"] == "sas":
+            curve, why = resolve_curve(db, n["params"])
+            if not curve:
+                problems.append(f"{n['label']} has no usable curve — {why}")
+
+    warnings = []
     if starts:
-        seen, stack = set(), [starts[0]["id"]]
+        # Reachability, and with it the operating mode each block runs in. A block
+        # can be reached down more than one path, so each block carries the set of
+        # modes it may see; "?" means whatever the channel was already in.
+        seen: set[str] = set()
+        modes: dict[str, set[str]] = {}
+        stack: list[tuple[str, str]] = [(starts[0]["id"], "?")]
         while stack:
-            cur = stack.pop()
-            if cur in seen:
+            cur, mode = stack.pop()
+            if mode in modes.get(cur, set()):
                 continue
             seen.add(cur)
-            stack.extend(e["to"] for e in out.get(cur, []))
+            modes.setdefault(cur, set()).add(mode)
+            nxt_mode = nodes[cur]["params"].get("mode", mode) if nodes[cur]["type"] == "mode" else mode
+            stack.extend((e["to"], nxt_mode) for e in out.get(cur, []))
         for n in nodes.values():
             if n["id"] not in seen:
                 problems.append(f"{n['label']} is never reached from Start")
-    return {"ok": not problems, "problems": problems}
+                continue
+            here = modes.get(n["id"], set())
+            # VOLT / CURR are refused with 315 while the channel is in SAS mode.
+            if n["type"] in ("setv", "seti") and "SAS" in here:
+                problems.append(
+                    f"{n['label']} runs while the channel is in SAS mode — the instrument answers "
+                    f"315 settings conflict. Switch back to FIX first, or use Apply Solar Profile.")
+            # Entering SAS without programming a curve leaves whatever was there before.
+            if n["type"] == "output" and str(n["params"].get("on", "")).upper() == "ON" and "SAS" in here:
+                if not _curve_before(n["id"], nodes, out, starts[0]["id"]):
+                    warnings.append(
+                        f"{n['label']} energises the output in SAS mode with no Apply Solar Profile "
+                        f"before it — the channel keeps whatever curve was last programmed.")
+            # A curve programmed on a channel that never leaves FIX is stored and ignored.
+            if n["type"] == "sas" and here and "SAS" not in here:
+                warnings.append(
+                    f"{n['label']} only ever runs while the channel is in FIX mode — the curve is "
+                    f"accepted but ignored until a Set Mode block switches the channel to SAS.")
+    return {"ok": not problems, "problems": problems, "warnings": warnings}
+
+
+def _curve_before(target: str, nodes: dict, out: dict, start: str) -> bool:
+    """True when every path from Start to `target` passes an Apply Solar Profile.
+    Walks the blocks reachable without meeting one; if the target is among them,
+    at least one way in never programmed a curve."""
+    seen, stack = set(), [start]
+    while stack:
+        cur = stack.pop()
+        if cur in seen or nodes[cur]["type"] == "sas":
+            continue
+        seen.add(cur)
+        stack.extend(e["to"] for e in out.get(cur, []))
+    return target not in seen
 
 
 def estimate_ms(db: Session, scenario_id: str) -> int:
@@ -287,11 +377,15 @@ def _set_node_state(run: orm.ScenarioRun, node_id: str, value: str):
     run.node_states = json.dumps(states)
 
 
-def _event(db: Session, run_id: str, node: str, lvl: str, m: str, result: CommandResult | None = None):
+def _event(db: Session, run_id: str, node: str, lvl: str, m: str,
+           result: CommandResult | None = None, reading: dict | None = None):
     db.add(orm.ScenarioRunEvent(
         run_id=run_id, t=now_hhmmss(), node=node, lvl=lvl, m=m,
         scpi=result.sent if result else "", response=(result.response or "") if result else "",
-        latency_ms=result.latency_ms if result else 0))
+        latency_ms=result.latency_ms if result else 0, ts_ms=_ms(),
+        voltage=reading.get("voltage") if reading else None,
+        current=reading.get("current") if reading else None,
+        power=reading.get("power") if reading else None))
 
 
 def create_run(db: Session, scenario_id: str, by: str = "a.ng", dry: bool = False) -> str:
@@ -310,7 +404,23 @@ def create_run(db: Session, scenario_id: str, by: str = "a.ng", dry: bool = Fals
     return run_id
 
 
-def _dispatch(node: dict, inst: Instrument, last: dict) -> tuple[CommandResult | None, str]:
+class StepRefused(Exception):
+    """A block cannot run as configured — nothing was sent to the instrument.
+    Treated exactly like a failed step so the fail path still applies."""
+
+
+def _dispatch_threaded(run_id: str, node: dict, inst: Instrument, last: dict) -> tuple[CommandResult | None, str, str]:
+    """Runs a block off the event loop, in its own session. Returns
+    (result, message, refusal) — refusal is set when the block could not run."""
+    try:
+        with session_scope() as db:
+            result, msg = _dispatch(db, run_id, node, inst, last)
+        return result, msg, ""
+    except StepRefused as e:
+        return None, "", str(e)
+
+
+def _dispatch(db: Session, run_id: str, node: dict, inst: Instrument, last: dict) -> tuple[CommandResult | None, str]:
     """Run one block against the instrument. Returns (result, human message).
     Blocks that don't touch the instrument return (None, message)."""
     t, p = node["type"], node["params"]
@@ -321,8 +431,12 @@ def _dispatch(node: dict, inst: Instrument, last: dict) -> tuple[CommandResult |
     if t == "seti":
         return inst.set_current(float(p["amps"])), f"current limit → {float(p['amps']):g} A"
     if t == "sas":
-        return (inst.apply_sas_curve(float(p["isc"]), float(p["imp"]), float(p["vmp"]), float(p["voc"])),
-                f"curve → Vmp {float(p['vmp']):g} V / Imp {float(p['imp']):g} A")
+        curve, why = resolve_curve(db, p)
+        if not curve:
+            raise StepRefused(f"solar profile has no usable curve — {why}")
+        return (inst.apply_sas_curve(curve["isc"], curve["imp"], curve["vmp"], curve["voc"]),
+                f"curve from {why} → Vmp {curve['vmp']:g} V / Imp {curve['imp']:g} A "
+                f"/ Voc {curve['voc']:g} V / Isc {curve['isc']:g} A")
     if t == "output":
         on = str(p["on"]).upper() == "ON"
         return inst.set_output(on), f"output → {'ON' if on else 'OFF'}"
@@ -338,6 +452,13 @@ def _dispatch(node: dict, inst: Instrument, last: dict) -> tuple[CommandResult |
         if not last:
             return None, "nothing measured yet — recorded as empty"
         return None, (f"recorded {last['voltage']:.3f} V · {last['current']:.3f} A · {last['power']:.2f} W")
+    if t == "export":
+        measured_only = p.get("what") == data.EXPORT_MEASURED
+        path, rows = write_run_csv(db, run_id, measured_only=measured_only)
+        if not rows:
+            return None, ("no measurements to export yet — add a Read V · I · P block before this one"
+                          if measured_only else "nothing to export yet")
+        return None, f"exported {rows} row(s) to {path.name}"
     if t in ("start", "end", "wait", "threshold"):
         return None, ""
     return None, f"block type {t} has no action"
@@ -401,15 +522,16 @@ async def start_run(run_id: str):
                     _set_node_state(run, cur, RUNNING)
 
                 # the blocking parts happen outside the DB session
+                refused = ""
                 if node["type"] == "wait":
                     await asyncio.sleep(int(node["params"].get("ms", 0)) / 1000)
                     result, msg = None, f"waited {int(node['params'].get('ms', 0))} ms"
                 elif node["type"] == "threshold":
                     result, msg = None, ""
                 else:
-                    result, msg = await asyncio.to_thread(_dispatch, node, inst, last)
+                    result, msg, refused = await asyncio.to_thread(_dispatch_threaded, run_id, node, inst, last)
 
-                failed = result is not None and not result.ok
+                failed = refused != "" or (result is not None and not result.ok)
                 branch_fail = False
                 if node["type"] == "threshold":
                     passed, msg = _check(node, last)
@@ -423,11 +545,15 @@ async def start_run(run_id: str):
                         state.log_command(db, RUNNER_USER, unit_name, f"scenario:{node['label']}", result)
                     if failed:
                         _set_node_state(run, cur, ERROR)
-                        _event(db, run_id, cur, "err", f"{node['label']} · {result.describe()}", result)
+                        detail = refused or result.describe()
+                        _event(db, run_id, cur, "err", f"{node['label']} · {detail}", result)
                     else:
                         _set_node_state(run, cur, DONE)
                         lvl = "warn" if branch_fail else "ok"
-                        _event(db, run_id, cur, lvl, f"{node['label']}{' · ' + msg if msg else ''}", result)
+                        # Only the steps that actually produced a reading carry one, so
+                        # an exported row never implies a measurement the step never took.
+                        reading = last if node["type"] in ("measure", "record") and last else None
+                        _event(db, run_id, cur, lvl, f"{node['label']}{' · ' + msg if msg else ''}", result, reading)
                     visited += 1
                     run.progress = min(99, round(visited / total * 100))
 
@@ -483,6 +609,61 @@ async def start_run(run_id: str):
                     _event(db, run_id, cur or "", "err", "Run aborted by an internal error")
 
     _run_tasks[run_id] = asyncio.create_task(drive())
+
+
+# ---------- CSV export ----------
+EXPORT_DIR = Path(__file__).resolve().parent.parent / "exports"
+
+CSV_HEADER = ["run", "scenario", "version", "target", "time_utc", "elapsed_s", "block",
+              "level", "message", "scpi_sent", "response", "latency_ms",
+              "voltage_v", "current_a", "power_w"]
+
+
+def run_csv_rows(db: Session, run_id: str, measured_only: bool = False) -> list[list]:
+    """One row per step, in the order the run took them. Numbers stay numbers so
+    the file charts in Excel without cleaning."""
+    run = db.get(orm.ScenarioRun, run_id)
+    if not run:
+        return []
+    labels = {}
+    s = db.get(orm.Scenario, run.scenario_id)
+    if s:
+        labels = {n.id: _node_dict(n, db)["label"] for n in s.nodes}
+    events = (db.query(orm.ScenarioRunEvent)
+              .filter(orm.ScenarioRunEvent.run_id == run_id)
+              .order_by(orm.ScenarioRunEvent.id.asc()).all())
+    rows = []
+    for e in events:
+        if measured_only and e.voltage is None:
+            continue
+        elapsed = round((e.ts_ms - run.started_ms) / 1000, 3) if e.ts_ms and run.started_ms else ""
+        rows.append([run.id, run.scenario, run.version, run.targets, e.t, elapsed,
+                      labels.get(e.node, e.node), e.lvl, e.m, e.scpi, e.response,
+                      e.latency_ms or "", e.voltage if e.voltage is not None else "",
+                      e.current if e.current is not None else "",
+                      e.power if e.power is not None else ""])
+    return rows
+
+
+def run_csv_text(db: Session, run_id: str, measured_only: bool = False) -> str:
+    buf = io.StringIO()
+    w = csv.writer(buf, lineterminator="\n")
+    w.writerow(CSV_HEADER)
+    w.writerows(run_csv_rows(db, run_id, measured_only))
+    return buf.getvalue()
+
+
+def write_run_csv(db: Session, run_id: str, measured_only: bool = False) -> tuple[Path, int]:
+    """Writes the run-so-far to backend/exports/ and returns (path, row count)."""
+    rows = run_csv_rows(db, run_id, measured_only)
+    EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+    suffix = "-measurements" if measured_only else ""
+    path = EXPORT_DIR / f"{run_id}{suffix}.csv"
+    with path.open("w", newline="", encoding="utf-8-sig") as fh:
+        w = csv.writer(fh, lineterminator="\n")
+        w.writerow(CSV_HEADER)
+        w.writerows(rows)
+    return path, len(rows)
 
 
 def _fmt_dur(run: orm.ScenarioRun) -> str:

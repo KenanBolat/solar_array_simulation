@@ -206,13 +206,16 @@ export type NodeState = "ready" | "running" | "done" | "error" | "skipped";
 export interface NodeParamSpec {
   key: string;
   label: string;
-  type: "number" | "select";
+  /** "preset" is a select whose options come from the stored SAS presets. */
+  type: "number" | "select" | "preset";
   unit?: string;
   options?: string[];
   default?: number | string;
   min?: number;
   max?: number;
   step?: number;
+  /** Only shown when the block's `source` param equals this value. */
+  only?: string;
 }
 
 export interface NodeTypeSpec {
@@ -269,7 +272,8 @@ export interface ScenarioGraph {
   nodes: ScenarioNode[];
   edges: ScenarioEdge[];
   nodeTypes: NodeTypeSpec[];
-  validation: { ok: boolean; problems: string[] };
+  /** problems block the run; warnings are worth reading but do not. */
+  validation: { ok: boolean; problems: string[]; warnings: string[] };
   estMs: number;
   run: ScenarioRunView | null;
 }

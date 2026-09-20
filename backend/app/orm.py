@@ -190,3 +190,11 @@ class ScenarioRunEvent(Base):
     scpi = Column(String, nullable=False, default="")      # exact program message, when the step sent one
     response = Column(String, nullable=False, default="")  # readback / query response
     latency_ms = Column(Integer, nullable=False, default=0)
+    # The reading this step produced, kept as numbers rather than only inside the
+    # message text so a CSV export charts directly. Null means the step took no
+    # reading — distinct from a reading of zero.
+    voltage = Column(Float, nullable=True)
+    current = Column(Float, nullable=True)
+    power = Column(Float, nullable=True)
+    # wall-clock of the step, so exported rows have a real time axis
+    ts_ms = Column(Integer, nullable=True)
