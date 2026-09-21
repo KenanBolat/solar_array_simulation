@@ -73,19 +73,29 @@ export default function ScenarioBuilderPage() {
 
   // While a run is live the graph is polled quickly so block colours, the
   // clock and the command history keep up with it.
-  const run = graph?.run ?? null;
-  const live = run?.status === "Running";
-  const { data: liveRun } = usePoll(() => api.scenarioRun(SCENARIO_ID), live ? 600 : 4000, [live]);
-  const runView = (liveRun && "id" in liveRun ? liveRun : run) ?? null;
-  const isLive = runView?.status === "Running";
+  const live = (graph?.runs ?? []).some((r) => r.status === "Running");
+  const { data: liveBatch } = usePoll(() => api.scenarioRun(SCENARIO_ID), live ? 600 : 4000, [live]);
+  // One run per selected channel. The canvas shows one at a time; `viewRun` is
+  // which, defaulting to whichever is still going.
+  const runs = liveBatch?.runs?.length ? liveBatch.runs : (graph?.runs ?? []);
+  const [viewRun, setViewRun] = useState<string | null>(null);
+  const runView = runs.find((r) => r.id === viewRun)
+    ?? runs.find((r) => r.status === "Running")
+    ?? runs[0] ?? null;
+  const isLive = runs.some((r) => r.status === "Running");
 
   const { data: units, reload: reloadUnits } = usePoll(() => api.units(), 10000);
   // Only enabled SAS presets can drive a solar-profile block.
   const { data: presetData } = usePoll(() => api.presets(), 15000);
   const sasPresets = (presetData?.presets ?? []).filter((p) => p.mode === "SAS" && p.enabled);
-  const targetName = graph?.scenario.targetUnit || units?.find((u) => u.featured)?.name || units?.[0]?.name || "";
-  const target = units?.find((u) => u.name === targetName);
-  const targetActive = !!target && target.enabled && target.online;
+  // The channels this scenario is set to run on — nothing is assumed for it.
+  const chosen = graph?.scenario.targets ?? [];
+  const chosenUnits = chosen.map((n) => units?.find((u) => u.name === n) ?? null);
+  const targetsActive = chosen.length > 0 && chosenUnits.every((u) => u && u.enabled && u.online);
+  const deadTargets = chosen.filter((n, i) => {
+    const u = chosenUnits[i];
+    return !u || !u.enabled || !u.online;
+  });
 
   // a live clock so the elapsed readout ticks even between polls
   const [, setTick] = useState(0);
@@ -109,6 +119,27 @@ export default function ScenarioBuilderPage() {
     names.map((n) => units?.find((u) => u.name === n)?.label ?? n).join(" / ");
   // Only worth labelling blocks with their channel when the graph uses more than one.
   const multiTarget = new Set(graph.nodes.flatMap((n) => n.runsOn ?? [])).size > 1;
+
+  // Channels available to run on, grouped under their mainframe.
+  const selectable = (units ?? []).filter((u) => u.enabled || chosen.includes(u.name));
+  const byInstrument: Record<string, typeof selectable> = {};
+  selectable.forEach((u) => (byInstrument[u.instrument] ??= []).push(u));
+
+  const saveTargets = async (names: string[], parallel: boolean) => {
+    try {
+      await api.setScenarioTargets(SCENARIO_ID, names, parallel);
+      load();
+    } catch (e) {
+      notify(e instanceof Error ? e.message : "Could not set the targets");
+    }
+  };
+  const toggleTargets = (names: string[], on: boolean) => {
+    const next = on
+      ? [...chosen, ...names.filter((n) => !chosen.includes(n))]
+      : chosen.filter((n) => !names.includes(n));
+    // Parallel is meaningless with fewer than two channels.
+    saveTargets(next, next.length > 1 && graph.scenario.parallel);
+  };
 
   /** Zoom so the widest/tallest block still fits the visible canvas. */
   const fitToGraph = () => {
@@ -290,10 +321,12 @@ export default function ScenarioBuilderPage() {
   const barColor = !runView || !done ? "#fbbf24"
     : runView.status === "Completed" ? "#34d399" : "#f87171";
 
-  const canRun = targetActive && graph.validation.ok && !isLive;
-  const runBlockedWhy = !targetActive
-    ? `${targetName || "target"} is not active (enabled + reachable)`
-    : !graph.validation.ok ? graph.validation.problems[0] : isLive ? "already running" : "";
+  const canRun = targetsActive && graph.validation.ok && !isLive;
+  const runBlockedWhy = !chosen.length
+    ? "No instrument selected — pick the channels to run on under “Run on”"
+    : deadTargets.length
+      ? `${deadTargets.map((n) => labelFor([n])).join(", ")} not active (enabled + reachable)`
+      : !graph.validation.ok ? graph.validation.problems[0] : isLive ? "already running" : "";
 
   return (
     <div className="flex h-full flex-col">
@@ -309,7 +342,23 @@ export default function ScenarioBuilderPage() {
             {runView.id} · {runView.status}
           </span>
         )}
-        <span className="font-mono text-[10px] text-faint">target {targetName || "—"}</span>
+        <span className="font-mono text-[10px] text-faint">
+          {chosen.length
+            ? `on ${labelFor(chosen)}${graph.scenario.parallel && chosen.length > 1 ? " · parallel" : ""}`
+            : "no instrument selected"}
+        </span>
+        {runs.length > 1 && (
+          // One run per channel — pick which one the canvas and history show.
+          <select value={runView?.id ?? ""} onChange={(e) => setViewRun(e.target.value)}
+            title="Which channel's run the canvas and command history are showing"
+            className="rounded border border-line2 bg-bg px-1.5 py-0.5 font-mono text-[10px] text-[#cfd6e2]">
+            {runs.map((r) => (
+              <option key={r.id} value={r.id}>
+                {labelFor(r.targets)} · {r.status.toLowerCase()}
+              </option>
+            ))}
+          </select>
+        )}
         <div className="flex-1" />
         <span title={canRun ? "" : runBlockedWhy}>
           <button onClick={() => setShowRunModal(true)} disabled={!canRun}
@@ -553,6 +602,59 @@ export default function ScenarioBuilderPage() {
 
         {/* inspector */}
         <div className="w-[300px] flex-none overflow-auto border-l border-line bg-[#0e1117] p-3.5">
+          {/* Which equipment this scenario runs on. The scenario itself is tied to
+              nothing; this selection is the only thing that binds it to hardware. */}
+          <div className="mb-1 flex items-center justify-between">
+            <span className="text-[10px] uppercase tracking-wider text-faint">Run on</span>
+            <span className="font-mono text-[9.5px] text-faint">
+              {chosen.length ? `${chosen.length} channel(s)` : "none"}
+            </span>
+          </div>
+          <div className="mb-3.5 rounded-[9px] border p-2.5"
+            style={{ borderColor: chosen.length ? "#232a36" : "#f8717155" }}>
+            {Object.entries(byInstrument).map(([inst, list]) => (
+              <div key={inst} className="mb-1.5 last:mb-0">
+                <label className="flex cursor-pointer items-center gap-1.5 text-[10px] uppercase tracking-wider text-faint">
+                  <input type="checkbox" disabled={isLive}
+                    checked={list.every((u) => chosen.includes(u.name))}
+                    onChange={(e) => toggleTargets(list.map((u) => u.name), e.target.checked)}
+                    className="h-3 w-3 accent-cyan" />
+                  {inst}
+                </label>
+                {list.map((u) => (
+                  <label key={u.name}
+                    className="ml-4 flex cursor-pointer items-center gap-2 py-0.5 text-[11.5px] text-[#cfd6e2]">
+                    <input type="checkbox" disabled={isLive} checked={chosen.includes(u.name)}
+                      onChange={(e) => toggleTargets([u.name], e.target.checked)}
+                      className="h-3 w-3 accent-cyan" />
+                    <span className="h-1.5 w-1.5 flex-none rounded-full"
+                      style={{ background: u.online ? "#34d399" : "#f87171" }} />
+                    {u.label}
+                    {!u.online && <span className="font-mono text-[9.5px] text-red">unreachable</span>}
+                  </label>
+                ))}
+              </div>
+            ))}
+            {!selectable.length && (
+              <div className="text-[11px] text-amber">No enabled channels — add one in Configuration.</div>
+            )}
+            <label className="mt-2 flex cursor-pointer items-start gap-2 border-t border-line pt-2 text-[11px] text-[#cfd6e2]">
+              <input type="checkbox" disabled={isLive || chosen.length < 2} checked={graph.scenario.parallel}
+                onChange={(e) => saveTargets(chosen, e.target.checked)}
+                className="mt-0.5 h-3 w-3 accent-cyan" />
+              <span>
+                Run channels in parallel
+                <span className="block text-[10px] leading-snug text-faint">
+                  {chosen.length < 2
+                    ? "Select two or more channels to enable this."
+                    : "All selected channels at once, each with its own run. Channels on one "
+                      + "mainframe share a single SCPI session, so their commands interleave; "
+                      + "channels on different mainframes truly overlap."}
+                </span>
+              </span>
+            </label>
+          </div>
+
           <div className="mb-2.5 text-[10px] uppercase tracking-wider text-faint">Block Settings</div>
           {!sel && (
             <div className="rounded-[9px] border border-dashed border-line2 p-4 text-[11.5px] leading-relaxed text-faint">
@@ -566,7 +668,7 @@ export default function ScenarioBuilderPage() {
                 {selSpec.badge}
                 {sel.type === "target"
                   ? " · changes the channel for the steps after it"
-                  : ` · runs on ${labelFor(sel.runsOn) || targetName || "—"}`}
+                  : ` · runs on ${labelFor(sel.runsOn) || "—"}`}
               </div>
 
               {selSpec.params.length === 0 && (
@@ -642,10 +744,11 @@ export default function ScenarioBuilderPage() {
               <div className="text-[16px] font-bold">Run {graph.scenario.name}</div>
             </div>
             <div className="mb-3.5 text-[13px] leading-relaxed text-[#a9b2c0]">
-              Each block is dispatched to <b className="text-ink">{targetName}</b> as real SCPI, confirmed by readback and recorded in the audit log. The canvas colours each block as it runs.
+              Each block is dispatched as real SCPI to <b className="text-ink">{labelFor(chosen)}</b>, confirmed by readback and recorded in the audit log. The canvas colours each block as it runs.
             </div>
             <div className="mb-5 flex flex-col gap-2 font-mono text-[11.5px] text-[#cfd6e2]">
-              <div>· {graph.nodes.length} blocks · estimated {fmtDur(graph.estMs)}</div>
+              <div>· {graph.nodes.length} blocks · estimated {fmtDur(graph.estMs)}{chosen.length > 1 ? (graph.scenario.parallel ? " per channel, all at once" : ` per channel, one after another (~${fmtDur(graph.estMs * chosen.length)} total)`) : ""}</div>
+              <div>· {chosen.length} channel(s): {labelFor(chosen)}</div>
               <div>· validation passed · {graph.edges.filter((e) => e.fail).length} fail path(s)</div>
               <div className="text-amber">⚠ the output will be energised during this run</div>
             </div>

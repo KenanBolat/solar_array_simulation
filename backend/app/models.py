@@ -129,3 +129,9 @@ class NetworkRequest(BaseModel):
     scpiPort: Optional[int] = None
     transport: Optional[str] = None
     channel: Optional[int] = None
+
+
+class TargetsRequest(BaseModel):
+    """Which channels a scenario runs on, and whether they run together."""
+    targets: list[str] = []
+    parallel: bool | None = None

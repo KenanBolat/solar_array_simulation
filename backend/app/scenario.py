@@ -132,14 +132,16 @@ def summarise(node_type: str, params: dict) -> str:
     return ""
 
 
-def walk(nodes: dict, out: dict, start: str, target0: str) -> dict[str, dict[str, set]]:
+def walk(nodes: dict, out: dict, start: str, targets0: list[str]) -> dict[str, dict[str, set]]:
     """Follows every path from Start, carrying the channel a block runs against and
     the operating mode that channel is in. Both travel together: a Set Mode applies
     to whichever channel is current, so comparing modes across channels would be
     meaningless. A block reachable by several paths collects each state it may see.
     "?" as a mode means the channel was left in whatever it already was."""
     reached: dict[str, dict[str, set]] = {}
-    stack: list[tuple[str, str, str]] = [(start, target0, "?")]
+    # One walk per selected channel: the same graph can reach a block on several
+    # channels, and each carries its own mode.
+    stack: list[tuple[str, str, str]] = [(start, t, "?") for t in (targets0 or [""])]
     seen_states: set[tuple[str, str, str]] = set()
     while stack:
         cur, tgt, mode = stack.pop()
@@ -166,16 +168,45 @@ def _edges_out(g: dict) -> dict[str, list]:
     return out
 
 
+def scenario_targets(s: orm.Scenario) -> list[str]:
+    """The channels a scenario runs against. Nothing is assumed: a scenario with
+    no selection does not silently fall back to some instrument, it fails
+    validation and says so."""
+    names = [n.strip() for n in (s.targets or "").split(",") if n.strip()]
+    if not names and s.target_unit:
+        names = [s.target_unit]          # a scenario stored before targets existed
+    return names
+
+
+def set_targets(db: Session, scenario_id: str, names: list[str], parallel: bool | None = None) -> dict:
+    s = db.get(orm.Scenario, scenario_id)
+    if not s:
+        raise ValueError("Unknown scenario")
+    chosen: list[str] = []
+    for name in names:
+        unit = state.get_unit(db, name)
+        if not unit:
+            raise ValueError(f"No channel named {name} is configured")
+        if not unit.enabled:
+            raise ValueError(f"{state.unit_label(unit)} is disabled — enable it first")
+        if unit.name not in chosen:
+            chosen.append(unit.name)
+    s.targets = ",".join(chosen)
+    s.target_unit = ""                    # the legacy field no longer decides anything
+    if parallel is not None:
+        s.parallel = bool(parallel)
+    db.commit()
+    return {"targets": chosen, "parallel": s.parallel}
+
+
 def graph(db: Session, scenario_id: str) -> dict | None:
     s = db.get(orm.Scenario, scenario_id)
     if not s:
         return None
-    default_target = s.target_unit or data.FEATURED_UNIT
+    targets = scenario_targets(s)
     g = {
-        # targetUnit is the *effective* default — the same fallback start_run uses —
-        # so the canvas can never name a different channel than the one dispatched to.
         "scenario": {"id": s.id, "name": s.name, "version": s.version, "state": s.state,
-                      "targetUnit": default_target},
+                      "targets": targets, "parallel": bool(s.parallel)},
         "nodes": [_node_dict(n, db) for n in sorted(s.nodes, key=lambda n: n.id)],
         "edges": [{"id": e.id, "from": e.src, "to": e.dst, "fail": e.fail} for e in s.edges],
         "nodeTypes": [{"type": k, **v} for k, v in data.NODE_TYPES.items()],
@@ -184,9 +215,9 @@ def graph(db: Session, scenario_id: str) -> dict | None:
     # switches equipment part-way is readable on the canvas.
     nodes = {n["id"]: n for n in g["nodes"]}
     start = next((n["id"] for n in g["nodes"] if n["type"] == "start"), None)
-    reached = walk(nodes, _edges_out(g), start, default_target) if start else {}
+    reached = walk(nodes, _edges_out(g), start, targets) if start else {}
     for n in g["nodes"]:
-        n["runsOn"] = sorted(reached.get(n["id"], {}).get("targets", set()))
+        n["runsOn"] = sorted(t for t in reached.get(n["id"], {}).get("targets", set()) if t)
     return g
 
 
@@ -355,6 +386,19 @@ def validate(db: Session, scenario_id: str) -> dict:
     nodes = {n["id"]: n for n in g["nodes"]}
     out = _edges_out(g)
     problems = []
+    # A scenario belongs to no instrument until one is chosen for it.
+    chosen = g["scenario"]["targets"]
+    if not chosen:
+        problems.append("No channel selected — choose the instruments and channels "
+                        "this scenario runs on")
+    for name in chosen:
+        unit = state.get_unit(db, name)
+        if not unit:
+            problems.append(f"Selected channel {name} is no longer configured — "
+                            f"pick another in Run on")
+        elif not unit.enabled:
+            problems.append(f"Selected channel {state.unit_label(unit)} is disabled")
+
     starts = [n for n in nodes.values() if n["type"] == "start"]
     if len(starts) != 1:
         problems.append(f"{len(starts)} Start blocks — a scenario needs exactly one")
@@ -379,8 +423,9 @@ def validate(db: Session, scenario_id: str) -> dict:
 
     warnings = []
     if starts:
-        reached = walk(nodes, out, starts[0]["id"], g["scenario"]["targetUnit"])
-        uncovered = _uncovered_curve(nodes, out, starts[0]["id"], g["scenario"]["targetUnit"])
+        targets = g["scenario"]["targets"]
+        reached = walk(nodes, out, starts[0]["id"], targets)
+        uncovered = _uncovered_curve(nodes, out, starts[0]["id"], targets)
         for n in nodes.values():
             if n["id"] not in reached:
                 problems.append(f"{n['label']} is never reached from Start")
@@ -405,13 +450,13 @@ def validate(db: Session, scenario_id: str) -> dict:
     return {"ok": not problems, "problems": problems, "warnings": warnings}
 
 
-def _uncovered_curve(nodes: dict, out: dict, start: str, target0: str) -> set[str]:
+def _uncovered_curve(nodes: dict, out: dict, start: str, targets0: list[str]) -> set[str]:
     """Blocks reachable by at least one path that never programmed a curve on the
     channel current at that point. Switching equipment resets the cover, because a
     curve sent to one channel says nothing about another."""
     bad: set[str] = set()
     seen: set[tuple[str, str, bool]] = set()
-    stack: list[tuple[str, str, bool]] = [(start, target0, False)]
+    stack: list[tuple[str, str, bool]] = [(start, t, False) for t in (targets0 or [""])]
     while stack:
         cur, tgt, covered = stack.pop()
         if (cur, tgt, covered) in seen:
@@ -460,21 +505,57 @@ def _event(db: Session, run_id: str, node: str, lvl: str, m: str,
         power=reading.get("power") if reading else None))
 
 
-def create_run(db: Session, scenario_id: str, by: str = "", dry: bool = False) -> str:
+def create_run(db: Session, scenario_id: str, target: str, batch: str = "",
+               by: str = "", dry: bool = False) -> str:
+    """One run against one channel. A press of Run makes one of these per selected
+    channel, sharing a batch id, so each keeps its own block states and history."""
     by = by or data.DEFAULT_USER
     s = db.get(orm.Scenario, scenario_id)
     if not s:
         raise ValueError("Unknown scenario")
-    target = s.target_unit or data.FEATURED_UNIT
     count = db.query(orm.ScenarioRun).count()
     run_id = f"RUN-{8843 + count}"
     states = {n.id: READY for n in s.nodes}
     db.add(orm.ScenarioRun(
-        id=run_id, scenario=s.name, scenario_id=s.id, version=s.version, status="Queued",
-        dry=dry, progress=0, targets=target, by=by, started=now_hhmmss(), finished="—", dur="0s",
-        node_states=json.dumps(states), est_ms=estimate_ms(db, scenario_id)))
+        id=run_id, scenario=s.name, scenario_id=s.id, batch=batch or run_id, version=s.version,
+        status="Queued", dry=dry, progress=0, targets=target, by=by, started=now_hhmmss(),
+        finished="—", dur="0s", node_states=json.dumps(states), est_ms=estimate_ms(db, scenario_id)))
     db.commit()
     return run_id
+
+
+async def start_batch(db: Session, scenario_id: str, by: str = "", dry: bool = False) -> dict:
+    """Dispatch the scenario to every selected channel.
+
+    In parallel the runs are started together; sequentially each waits for the
+    one before. Note that "parallel" is only as parallel as the hardware allows:
+    two channels of one mainframe share a single SCPI session, so their commands
+    interleave rather than overlap. Channels on different mainframes really do
+    run at the same time."""
+    s = db.get(orm.Scenario, scenario_id)
+    if not s:
+        raise ValueError("Unknown scenario")
+    targets = scenario_targets(s)
+    if not targets:
+        raise ValueError("No channel selected for this scenario")
+    batch = f"B-{uuid.uuid4().hex[:8]}"
+    run_ids = [create_run(db, scenario_id, t, batch=batch, by=by, dry=dry) for t in targets]
+
+    if s.parallel:
+        await asyncio.gather(*(start_run(r) for r in run_ids))
+    else:
+        # Sequential: hand the chain to a background task so Run returns at once.
+        async def chain():
+            for rid in run_ids:
+                await start_run(rid)
+                task = _run_tasks.get(rid)
+                if task:
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        return          # aborted — do not start the next channel
+        _run_tasks[batch] = asyncio.create_task(chain())
+    return {"batch": batch, "runs": run_ids, "targets": targets, "parallel": bool(s.parallel)}
 
 
 class StepRefused(Exception):
@@ -782,6 +863,13 @@ def _fmt_dur(run: orm.ScenarioRun) -> str:
     return f"{int(secs // 60)}m {secs % 60:.0f}s" if secs >= 60 else f"{secs:.1f}s"
 
 
+def cancel_batch(batch: str) -> None:
+    """Stop a sequential batch from starting its next channel after an abort."""
+    task = _run_tasks.pop(batch, None)
+    if task:
+        task.cancel()
+
+
 def abort_run(db: Session, run_id: str) -> dict:
     run = db.get(orm.ScenarioRun, run_id)
     if not run or run.status != "Running":
@@ -868,19 +956,24 @@ def run_view(db: Session, run_id: str) -> dict | None:
     }
 
 
-def active_run(db: Session, scenario_id: str) -> dict | None:
-    run = (db.query(orm.ScenarioRun)
-           .filter(orm.ScenarioRun.scenario_id == scenario_id, orm.ScenarioRun.status == "Running")
-           .first())
-    return run_view(db, run.id) if run else None
-
-
-def latest_run(db: Session, scenario_id: str) -> dict | None:
-    run = (db.query(orm.ScenarioRun)
-           .filter(orm.ScenarioRun.scenario_id == scenario_id,
-                   orm.ScenarioRun.cleared.is_(False))
-           .order_by(orm.ScenarioRun.id.desc()).first())
-    return run_view(db, run.id) if run else None
+def current_batch(db: Session, scenario_id: str) -> list[dict]:
+    """Every run of the batch the canvas should be showing — the one still going,
+    otherwise the most recent that has not been cleared. One entry per channel."""
+    running = (db.query(orm.ScenarioRun)
+               .filter(orm.ScenarioRun.scenario_id == scenario_id,
+                       orm.ScenarioRun.status == "Running")
+               .order_by(orm.ScenarioRun.id.asc()).first())
+    anchor = running or (db.query(orm.ScenarioRun)
+                         .filter(orm.ScenarioRun.scenario_id == scenario_id,
+                                 orm.ScenarioRun.cleared.is_(False))
+                         .order_by(orm.ScenarioRun.id.desc()).first())
+    if not anchor:
+        return []
+    runs = (db.query(orm.ScenarioRun)
+            .filter(orm.ScenarioRun.batch == (anchor.batch or anchor.id),
+                    orm.ScenarioRun.cleared.is_(False))
+            .order_by(orm.ScenarioRun.id.asc()).all())
+    return [v for v in (run_view(db, r.id) for r in runs or [anchor]) if v]
 
 
 def reset_scenario(db: Session, scenario_id: str) -> dict:
@@ -909,8 +1002,8 @@ def reset_scenario(db: Session, scenario_id: str) -> dict:
     dropped = close_all_sessions()
     reset_backoff()
 
-    g = graph(db, scenario_id) or {"scenario": {"targetUnit": ""}, "nodes": []}
-    wanted = {g["scenario"].get("targetUnit") or data.FEATURED_UNIT}
+    g = graph(db, scenario_id) or {"scenario": {"targets": []}, "nodes": []}
+    wanted = set(g["scenario"].get("targets") or [])
     wanted |= {t for n in g["nodes"] for t in n.get("runsOn", []) if t}
     targets = []
     for name in sorted(wanted):

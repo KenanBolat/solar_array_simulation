@@ -96,8 +96,14 @@ export const api = {
   runCsvUrl: (id: string, measured = false) => `/api/runs/${id}/export.csv${measured ? "?measured=true" : ""}`,
 
   scenario: (id: string) => j<ScenarioGraph>(`/api/scenarios/${id}`),
-  scenarioRun: (id: string) => j<ScenarioRunView | Record<string, never>>(`/api/scenarios/${id}/run`),
-  runScenario: (id: string) => j<ScenarioRunView>(`/api/scenarios/${id}/run`, { method: "POST" }),
+  scenarioRun: (id: string) => j<{ runs: ScenarioRunView[] }>(`/api/scenarios/${id}/run`),
+  runScenario: (id: string) =>
+    j<{ batch: string; runs: ScenarioRunView[]; targets: string[]; parallel: boolean }>(
+      `/api/scenarios/${id}/run`, { method: "POST" }),
+  setScenarioTargets: (id: string, targets: string[], parallel: boolean) =>
+    j<{ targets: string[]; parallel: boolean }>(`/api/scenarios/${id}/targets`, {
+      method: "POST", body: JSON.stringify({ targets, parallel }),
+    }),
   abortScenario: (id: string) => j<{ ok: boolean; message: string }>(`/api/scenarios/${id}/abort`, { method: "POST" }),
   resetScenario: (id: string) =>
     j<{

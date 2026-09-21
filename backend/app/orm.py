@@ -126,7 +126,12 @@ class Scenario(Base):
     name = Column(String, nullable=False)
     version = Column(String, nullable=False, default="v1.0")
     state = Column(String, nullable=False, default="DRAFT")
-    target_unit = Column(String, nullable=False, default="")  # empty = the featured unit at run time
+    target_unit = Column(String, nullable=False, default="")  # legacy single target, migrated into `targets`
+    # The channels this scenario runs against, comma separated. A scenario is not
+    # tied to any instrument: with none selected it simply cannot run, and says so.
+    targets = Column(Text, nullable=False, default="")
+    # Run every selected channel at once, rather than one after another.
+    parallel = Column(Boolean, nullable=False, default=False)
     nodes = relationship("ScenarioNode", back_populates="scenario", cascade="all, delete-orphan")
     edges = relationship("ScenarioEdge", back_populates="scenario", cascade="all, delete-orphan")
 
@@ -161,6 +166,9 @@ class ScenarioRun(Base):
     id = Column(String, primary_key=True)
     scenario = Column(String, nullable=False)
     scenario_id = Column(String, nullable=False, default="")
+    # Runs dispatched together by one press of Run share a batch id — one run per
+    # selected channel, so each keeps its own block states, events and CSV.
+    batch = Column(String, nullable=False, default="", index=True)
     version = Column(String, nullable=False)
     status = Column(String, nullable=False)  # Queued | Running | Completed | Aborted | Failed
     dry = Column(Boolean, nullable=False, default=False)

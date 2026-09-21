@@ -283,14 +283,22 @@ export interface ScenarioRunView {
 }
 
 export interface ScenarioGraph {
-  scenario: { id: string; name: string; version: string; state: string; targetUnit: string };
+  scenario: {
+    id: string; name: string; version: string; state: string;
+    /** The channels this scenario runs on. Empty means it runs on nothing —
+     *  a scenario is not tied to any instrument until one is chosen. */
+    targets: string[];
+    /** Run every selected channel at once rather than one after another. */
+    parallel: boolean;
+  };
   nodes: ScenarioNode[];
   edges: ScenarioEdge[];
   nodeTypes: NodeTypeSpec[];
   /** problems block the run; warnings are worth reading but do not. */
   validation: { ok: boolean; problems: string[]; warnings: string[] };
   estMs: number;
-  run: ScenarioRunView | null;
+  /** One run per selected channel, dispatched together by one press of Run. */
+  runs: ScenarioRunView[];
 }
 
 export interface TerminalCommand {

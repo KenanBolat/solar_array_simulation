@@ -288,8 +288,22 @@ the same soft limits the front panel uses, so an out-of-range entry is refused w
 reason rather than silently stored. A **Threshold Check** block has a second, red port
 for its fail path. Positions, parameters and connections all persist.
 
-**Equipment.** A scenario runs against a default channel throughout unless a **Select
-Equipment** block moves it. That block picks any configured instrument and channel —
+**Equipment.** A scenario is tied to no instrument. **Run on** in the inspector lists
+every configured channel as a checkbox, grouped under its mainframe; ticking an
+instrument takes all of its channels. Until something is ticked the scenario cannot run
+and says so — nothing is assumed on its behalf, and a channel that is later deleted or
+disabled is reported by name rather than silently substituted.
+
+One press of Run dispatches **one run per selected channel**, sharing a batch. Each keeps
+its own block colours, command history and CSV, and a picker in the toolbar chooses which
+the canvas is showing. **Run channels in parallel** starts them together instead of one
+after another; measured on two emulated mainframes, the same scenario took 8.3 s in
+parallel against 20 s sequentially. Parallel is only as parallel as the hardware allows:
+two channels of one mainframe share a single SCPI session, so their commands interleave,
+while channels on different mainframes genuinely overlap. Abort stops every channel in
+the batch, and de-energises each.
+
+Within a run, a **Select Equipment** block still moves the target. That block picks any configured instrument and channel —
 `SAS-01 (@1)`, `SAS-02 (@2)` — and every step after it is dispatched there; nothing is
 sent to the instrument by the switch itself. Once a scenario uses more than one channel,
 each block on the canvas says which one it runs on, the command history gains a channel

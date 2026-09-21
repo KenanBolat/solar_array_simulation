@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 
 from .. import data, orm, scenario, state
 from ..db import get_db
-from ..models import AddEdgeRequest, AddNodeRequest, UpdateNodeRequest
+from ..models import AddEdgeRequest, AddNodeRequest, TargetsRequest, UpdateNodeRequest
 
 router = APIRouter(prefix="/api/scenarios", tags=["scenarios"])
 
@@ -25,7 +25,7 @@ def get_scenario(scenario_id: str, db: Session = Depends(get_db)):
     g = _graph_or_404(db, scenario_id)
     g["validation"] = scenario.validate(db, scenario_id)
     g["estMs"] = scenario.estimate_ms(db, scenario_id)
-    g["run"] = scenario.active_run(db, scenario_id) or scenario.latest_run(db, scenario_id)
+    g["runs"] = scenario.current_batch(db, scenario_id)
     return g
 
 
@@ -82,8 +82,20 @@ def validate(scenario_id: str, db: Session = Depends(get_db)):
 
 @router.get("/{scenario_id}/run")
 def current_run(scenario_id: str, db: Session = Depends(get_db)):
+    """Every run of the current batch — one per selected channel."""
     _graph_or_404(db, scenario_id)
-    return scenario.active_run(db, scenario_id) or scenario.latest_run(db, scenario_id) or {}
+    return {"runs": scenario.current_batch(db, scenario_id)}
+
+
+@router.post("/{scenario_id}/targets")
+def set_targets(scenario_id: str, body: TargetsRequest, db: Session = Depends(get_db)):
+    """Which instruments and channels this scenario runs on, and whether they run
+    together. A scenario is tied to nothing until this is set."""
+    _graph_or_404(db, scenario_id)
+    try:
+        return scenario.set_targets(db, scenario_id, body.targets, body.parallel)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 @router.post("/{scenario_id}/run")
@@ -94,9 +106,9 @@ async def run_scenario(scenario_id: str, db: Session = Depends(get_db)):
     if not check["ok"]:
         raise HTTPException(400, "Scenario is not runnable — " + "; ".join(check["problems"]))
 
-    # Every channel the scenario may dispatch to must be up, not only the default —
-    # a Select Equipment block can send later steps somewhere else entirely.
-    wanted = {g["scenario"]["targetUnit"] or data.FEATURED_UNIT}
+    # Every channel the scenario may dispatch to must be up — the ones selected to
+    # run on, and any a Select Equipment block redirects later steps to.
+    wanted = set(g["scenario"]["targets"])
     wanted |= {t for n in g["nodes"] for t in n.get("runsOn", []) if t}
     for name in sorted(wanted):
         target = state.get_unit(db, name)
@@ -109,9 +121,8 @@ async def run_scenario(scenario_id: str, db: Session = Depends(get_db)):
                                         orm.ScenarioRun.status == "Running").first():
         raise HTTPException(409, f"{g['scenario']['name']} is already running")
 
-    run_id = scenario.create_run(db, scenario_id)
-    await scenario.start_run(run_id)
-    return scenario.run_view(db, run_id)
+    started = await scenario.start_batch(db, scenario_id)
+    return {**started, "runs": scenario.current_batch(db, scenario_id)}
 
 
 @router.post("/{scenario_id}/reset")
@@ -124,8 +135,12 @@ def reset(scenario_id: str, db: Session = Depends(get_db)):
 
 @router.post("/{scenario_id}/abort")
 def abort(scenario_id: str, db: Session = Depends(get_db)):
-    run = db.query(orm.ScenarioRun).filter(orm.ScenarioRun.scenario_id == scenario_id,
-                                            orm.ScenarioRun.status == "Running").first()
-    if not run:
+    """Stops the whole batch, not just one channel — a scenario running on four
+    channels must not leave three of them going when the operator hits Abort."""
+    runs = db.query(orm.ScenarioRun).filter(orm.ScenarioRun.scenario_id == scenario_id,
+                                             orm.ScenarioRun.status == "Running").all()
+    if not runs:
         raise HTTPException(409, "No run is active for this scenario")
-    return scenario.abort_run(db, run.id)
+    scenario.cancel_batch(runs[0].batch or runs[0].id)
+    msgs = [scenario.abort_run(db, r.id)["message"] for r in runs]
+    return {"ok": True, "message": " · ".join(msgs)}
