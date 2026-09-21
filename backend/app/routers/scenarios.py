@@ -114,6 +114,14 @@ async def run_scenario(scenario_id: str, db: Session = Depends(get_db)):
     return scenario.run_view(db, run_id)
 
 
+@router.post("/{scenario_id}/reset")
+def reset(scenario_id: str, db: Session = Depends(get_db)):
+    """Get a scenario out of a state it will not start from: stop anything still
+    running, clear the last run off the canvas, and re-check the channels."""
+    _graph_or_404(db, scenario_id)
+    return scenario.reset_scenario(db, scenario_id)
+
+
 @router.post("/{scenario_id}/abort")
 def abort(scenario_id: str, db: Session = Depends(get_db)):
     run = db.query(orm.ScenarioRun).filter(orm.ScenarioRun.scenario_id == scenario_id,

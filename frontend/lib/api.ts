@@ -99,6 +99,12 @@ export const api = {
   scenarioRun: (id: string) => j<ScenarioRunView | Record<string, never>>(`/api/scenarios/${id}/run`),
   runScenario: (id: string) => j<ScenarioRunView>(`/api/scenarios/${id}/run`, { method: "POST" }),
   abortScenario: (id: string) => j<{ ok: boolean; message: string }>(`/api/scenarios/${id}/abort`, { method: "POST" }),
+  resetScenario: (id: string) =>
+    j<{
+      ok: boolean; stoppedRun: string | null; clearedRuns: number; droppedSessions: number;
+      ready: boolean;
+      targets: { name: string; label: string; online: boolean; enabled: boolean; error: string | null }[];
+    }>(`/api/scenarios/${id}/reset`, { method: "POST" }),
   addNode: (scenarioId: string, type: string, x: number, y: number) =>
     j<ScenarioNode>(`/api/scenarios/${scenarioId}/nodes`, { method: "POST", body: JSON.stringify({ type, x, y }) }),
   updateNode: (scenarioId: string, nodeId: string, body: { x?: number; y?: number; label?: string; params?: Record<string, unknown> }) =>

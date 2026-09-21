@@ -347,7 +347,18 @@ the audit log. While the run is live:
 
 A run that reaches a **Safe Shutdown** block (because a check failed) finishes as
 `Failed` with the output de-energised; `Aborted` is reserved for an operator pressing
-Abort.
+Abort. **Abort also de-energises**: it stops the sequence and then sends `OUTP OFF` to
+every channel the run touched, reporting per channel — a channel it could not reach is
+named as *still energised* rather than quietly reported as safe.
+
+**↺ Reset & re-arm** is the way out of a scenario that will not start again. It stops
+anything still running (de-energising as Abort does), takes the last run off the canvas
+so the blocks go back to plain and the history empties, drops every SCPI session, and
+re-polls the channels the scenario needs. That last step is the point: a run most often
+refuses to start because a target went unreachable, and the stale session has to be
+dropped before it can come back. The result says whether each channel is ready, or names
+what is still wrong. When Run is disabled, a banner above the canvas says why rather than
+hiding it in a tooltip.
 
 ### What is still simulated
 

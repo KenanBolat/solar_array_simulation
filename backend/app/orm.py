@@ -177,6 +177,9 @@ class ScenarioRun(Base):
     started_ms = Column(Integer, nullable=True)
     ended_ms = Column(Integer, nullable=True)
     est_ms = Column(Integer, nullable=False, default=0)
+    # Cleared runs stay in the history but stop colouring the builder canvas, so
+    # Reset gives a blank graph to start again from.
+    cleared = Column(Boolean, nullable=False, default=False)
 
 
 class ScenarioRunEvent(Base):

@@ -52,6 +52,7 @@ export default function ScenarioBuilderPage() {
   const [zoom, setZoom] = useState(1);
   const [showRunModal, setShowRunModal] = useState(false);
   const [dropHint, setDropHint] = useState(false);
+  const [busy, setBusy] = useState(false);
 
   const canvasRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<{ id: string; dx: number; dy: number; moved: boolean } | null>(null);
@@ -78,7 +79,7 @@ export default function ScenarioBuilderPage() {
   const runView = (liveRun && "id" in liveRun ? liveRun : run) ?? null;
   const isLive = runView?.status === "Running";
 
-  const { data: units } = usePoll(() => api.units(), 10000);
+  const { data: units, reload: reloadUnits } = usePoll(() => api.units(), 10000);
   // Only enabled SAS presets can drive a solar-profile block.
   const { data: presetData } = usePoll(() => api.presets(), 15000);
   const sasPresets = (presetData?.presets ?? []).filter((p) => p.mode === "SAS" && p.enabled);
@@ -241,6 +242,30 @@ export default function ScenarioBuilderPage() {
     catch (e) { notify(e instanceof Error ? e.message : "Abort failed"); }
   };
 
+  /** The way out when the scenario will not start again: stop anything still
+   *  running, take the finished run off the canvas, drop the SCPI sessions and
+   *  re-check the channels — a target that went unreachable is the usual cause. */
+  const reset = async () => {
+    setBusy(true);
+    try {
+      const r = await api.resetScenario(SCENARIO_ID);
+      const bad = r.targets.filter((t) => !t.online || !t.enabled);
+      notify(r.ready
+        ? `Reset · canvas cleared · ${r.droppedSessions} session(s) dropped · ` +
+          `${r.targets.map((t) => t.label).join(", ")} ready`
+        : `Reset · still blocked: ${bad.map((t) => `${t.label} (${!t.enabled ? "disabled" : t.error || "unreachable"})`).join("; ")}`);
+      // Reset re-polls the channels server-side, so pull the unit list straight
+      // away too — otherwise Run stays disabled for up to the 10 s poll interval
+      // and a recovered scenario still looks stuck.
+      load();
+      reloadUnits();
+    } catch (e) {
+      notify(e instanceof Error ? e.message : "Reset failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   // Elapsed comes from the server and is carried forward locally between polls, so
   // the readout never depends on this browser's clock agreeing with the backend's.
   if (runView && runView.elapsedMs !== clock.current.server) {
@@ -296,7 +321,25 @@ export default function ScenarioBuilderPage() {
           className="rounded-md border border-red/40 bg-red/10 px-3 py-1.5 text-[11px] font-semibold text-red disabled:cursor-not-allowed disabled:opacity-40">
           Abort
         </button>
+        <button onClick={reset} disabled={busy}
+          title="Stop anything still running, clear the last run off the canvas, drop the SCPI sessions and re-check the target channels"
+          className="rounded-md border border-line2 bg-panel2 px-3 py-1.5 text-[11px] font-semibold text-[#cfd6e2] hover:border-cyan/50 hover:text-cyan disabled:opacity-40">
+          {busy ? "Resetting…" : "↺ Reset & re-arm"}
+        </button>
       </div>
+
+      {/* Why Run is disabled, said out loud. This used to be a title attribute
+          on the button, which is invisible unless you happen to hover it. */}
+      {!canRun && !isLive && (
+        <div className="flex flex-none items-center gap-2 border-b border-amber/25 bg-amber/[0.07] px-4 py-1.5">
+          <span className="text-[11px] font-semibold text-amber">Cannot run</span>
+          <span className="text-[11.5px] text-[#d7c9a4]">{runBlockedWhy}</span>
+          <span className="flex-1" />
+          <span className="font-mono text-[10px] text-amber/70">
+            try ↺ Reset &amp; re-arm
+          </span>
+        </div>
+      )}
 
       {/* progress / time indicator — read-only, shows where the run is */}
       {runView && (

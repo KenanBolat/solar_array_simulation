@@ -26,7 +26,8 @@ from sqlalchemy.orm import Session
 
 from . import data, orm, state
 from .db import session_scope
-from .scpi import CommandResult, Instrument
+from .poller import measure_unit, reset_backoff
+from .scpi import CommandResult, Instrument, close_all_sessions
 
 logger = logging.getLogger(__name__)
 
@@ -797,7 +798,42 @@ def abort_run(db: Session, run_id: str) -> dict:
     run.node_states = json.dumps(states)
     _event(db, run_id, "", "err", "Abort requested by the operator")
     db.commit()
-    return {"ok": True, "message": f"Abort dispatched · {run_id}"}
+    # Stopping the sequence is not enough: the run may have energised an output,
+    # and leaving a powered channel behind on an operator's Abort is exactly the
+    # state Abort exists to get out of.
+    shut = _shutdown_targets(db, run_id, run.targets.split(",") if run.targets else [])
+    return {"ok": True, "message": f"Abort dispatched · {run_id} · {shut}"}
+
+
+def _shutdown_targets(db: Session, run_id: str, names: list[str]) -> str:
+    """OUTP OFF on every channel a run touched. Reports honestly per channel —
+    an unreachable instrument cannot be de-energised from here and must be said
+    so rather than reported as safe."""
+    done, failed = [], []
+    for name in [n for n in names if n]:
+        unit = state.get_unit(db, name)
+        if not unit:
+            continue
+        label = state.unit_label(unit)
+        try:
+            result = Instrument.for_unit(unit).safe_shutdown()
+        except Exception as e:                              # never let cleanup raise
+            failed.append(label)
+            _event(db, run_id, "", "err", f"Could not de-energise {label} — {e}", unit=name)
+            continue
+        state.log_command(db, RUNNER_USER, name, "abort:safe shutdown", result)
+        if result.ok:
+            done.append(label)
+            _event(db, run_id, "", "ok", f"{label} de-energised — OUTP OFF", result, unit=name)
+        else:
+            failed.append(label)
+            _event(db, run_id, "", "err",
+                   f"Could not de-energise {label} — {result.describe()}", result, unit=name)
+    db.commit()
+    if failed:
+        return f"output OFF on {', '.join(done)}; STILL ENERGISED: {', '.join(failed)}" if done \
+            else f"COULD NOT DE-ENERGISE {', '.join(failed)} — check the instrument"
+    return f"output OFF on {', '.join(done)}" if done else "no output to de-energise"
 
 
 def run_view(db: Session, run_id: str) -> dict | None:
@@ -841,6 +877,56 @@ def active_run(db: Session, scenario_id: str) -> dict | None:
 
 def latest_run(db: Session, scenario_id: str) -> dict | None:
     run = (db.query(orm.ScenarioRun)
-           .filter(orm.ScenarioRun.scenario_id == scenario_id)
+           .filter(orm.ScenarioRun.scenario_id == scenario_id,
+                   orm.ScenarioRun.cleared.is_(False))
            .order_by(orm.ScenarioRun.id.desc()).first())
     return run_view(db, run.id) if run else None
+
+
+def reset_scenario(db: Session, scenario_id: str) -> dict:
+    """The way out of a scenario that will not start again.
+
+    Stops anything still running (de-energising as Abort does), takes the last
+    run off the canvas so the blocks go back to plain, then drops every SCPI
+    session and re-polls the channels this scenario needs. That last part is the
+    point: a run most often refuses to start because a target went unreachable,
+    and the session it was using has to be dropped before it can come back."""
+    stopped = None
+    running = (db.query(orm.ScenarioRun)
+               .filter(orm.ScenarioRun.scenario_id == scenario_id,
+                       orm.ScenarioRun.status == "Running").all())
+    for run in running:
+        abort_run(db, run.id)
+        stopped = run.id
+
+    cleared = (db.query(orm.ScenarioRun)
+               .filter(orm.ScenarioRun.scenario_id == scenario_id,
+                       orm.ScenarioRun.cleared.is_(False)).all())
+    for run in cleared:
+        run.cleared = True
+    db.commit()
+
+    dropped = close_all_sessions()
+    reset_backoff()
+
+    g = graph(db, scenario_id) or {"scenario": {"targetUnit": ""}, "nodes": []}
+    wanted = {g["scenario"].get("targetUnit") or data.FEATURED_UNIT}
+    wanted |= {t for n in g["nodes"] for t in n.get("runsOn", []) if t}
+    targets = []
+    for name in sorted(wanted):
+        unit = state.get_unit(db, name)
+        if not unit:
+            targets.append({"name": name, "label": name, "online": False, "enabled": False,
+                            "error": "no longer configured"})
+            continue
+        result, reading, resolved = measure_unit(unit.ip_address, unit.scpi_port, unit.transport, unit.channel)
+        if resolved and unit.transport == "auto":
+            unit.transport = resolved
+            unit.visa = state.derive_visa(unit.ip_address, unit.scpi_port, resolved)
+        state.apply_reading(db, unit, result, reading)
+        targets.append({"name": unit.name, "label": state.unit_label(unit), "online": unit.online,
+                        "enabled": unit.enabled, "error": unit.last_error or None})
+    db.commit()
+    ready = all(t["online"] and t["enabled"] for t in targets)
+    return {"ok": True, "stoppedRun": stopped, "clearedRuns": len(cleared),
+            "droppedSessions": dropped, "targets": targets, "ready": ready}
