@@ -252,10 +252,19 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt   # includes 
 # frontend (http://<host>:3301) — proxies /api/* to the backend above
 cd frontend
 npm install
-npm run dev
+npm run build && npm start          # see below: do NOT use `npm run dev` for other people
 ```
 
 Then open http://localhost:3301.
+
+**`npm run dev` is for editing the code, not for serving anyone else.** The dev
+server opens a hot-reload WebSocket back to the host it was loaded from
+(`ws://<host>:3301/_next/hmr`). It works on the machine running it, and on a LAN
+it retries that socket forever — every tester's console fills with
+`WebSocket connection ... failed: ERR_CONNECTION_RESET`, because a firewall, a
+reverse proxy or plain host mismatch drops the upgrade. It is noise, not a broken
+app, but it also means slower pages and no build-time type checking. The
+production build opens no WebSocket at all: `npm run build && npm start`.
 
 An existing `backend/data.db` is upgraded in place on startup (missing columns are
 added), so your configured units survive updates. Delete it only if you want a fresh
@@ -353,3 +362,23 @@ Fonts (IBM Plex Sans/Mono) are self-hosted under `frontend/public/fonts/` and
 loaded via local `@font-face` rules in `app/globals.css` — no `next/font/google`
 and no Google Fonts `<link>`. The frontend dev server and the running app need
 no internet access at all.
+
+The API docs are self-hosted for the same reason. FastAPI's stock `/docs` and
+`/redoc` fetch Swagger UI and ReDoc from `cdn.jsdelivr.net` and a favicon from
+`fastapi.tiangolo.com`; with no route to the internet those fail and the page
+renders blank with `SwaggerUIBundle is not defined`. Both bundles are vendored
+under `backend/app/static/docs/` (2.8 MB, from the `swagger-ui-dist` and `redoc`
+npm packages) and served from the backend itself. Both pages also carry a
+content-security policy restricting them to this origin, so anything a future
+bundle version tries to fetch is refused outright rather than hanging until it
+times out — ReDoc's decorative `cdn.redoc.ly` logo is blocked by design, and the
+resulting console line is the policy working, not a fault.
+
+To re-vendor after upgrading either package:
+
+```bash
+npm pack swagger-ui-dist@5 && tar xzf swagger-ui-dist-*.tgz
+cp package/swagger-ui-bundle.js package/swagger-ui.css backend/app/static/docs/
+npm pack redoc@2 && tar xzf redoc-*.tgz
+cp package/bundles/redoc.standalone.js backend/app/static/docs/
+```
